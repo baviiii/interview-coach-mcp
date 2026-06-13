@@ -1,25 +1,24 @@
 # interview-coach-mcp
 
-An MCP server that acts as the **brain** behind a career coach — mock interviews, study plans, cert advice, roadmaps, and tips that actually know who the learner is.
+An MCP server that acts as the **brain** behind a career coach — mock interviews, study plans, cert advice, roadmaps, and tips that know who the learner is (when Supabase is wired up).
 
 Built for [CareerCraft](https://github.com/) (the web app), but you can run it on its own, plug it into any MCP client (Cursor, Claude Desktop, etc.), or wire it into your own product.
+
+**Be honest about scope:** this is strongest as a **structured coach for tech-ish careers** (software, DevOps, data, PM). Other fields can work for **mock interviews if you pass a job description** — but cert catalogs, career paths, and proof sources are still tech-biased today. See [What's hardcoded vs dynamic](#whats-hardcoded-vs-dynamic) and [External sources](#external-sources-whats-actually-connected).
 
 ---
 
 ## What is this, in plain English?
 
-Most "AI interview prep" apps are just a chat box with a prompt. This is different.
+Most "AI interview prep" apps are just a chat box with a prompt. This one adds:
 
-This server is the **domain layer** — the part that knows:
-- which skills you're weak at
-- what job you're targeting
-- what certs you hold (and what's expiring)
-- how you scored on past mock interviews
-- what resources you've actually completed
-
-Every tool reads that context, does something useful, and writes signals back so the *next* interaction is smarter. That's the whole point.
+- a **learner profile** (skills, scores, certs, goals) from the database
+- a **session loop** (start → answer → hint → next → finish) with adaptive difficulty
+- **persistence** so the next session can target weak areas
+- optional **source links** on tips (Hacker News / Reddit) — not full web research
 
 It exposes that brain two ways:
+
 1. **MCP** (`POST /mcp`) — for AI agents and MCP clients
 2. **REST** (`POST /api/...`) — for a normal web frontend
 
@@ -30,31 +29,91 @@ Your app or MCP client
         │
         │  Authorization: Bearer <user's Supabase JWT>
         ▼
-  interview-coach-mcp  ──▶  Supabase (user's skills, sessions, certs, scores)
+  interview-coach-mcp  ──▶  Supabase (skills, sessions, certs, scores, resources)
         │
-        │  "generate questions", "evaluate answer", "draft tips", etc.
+        │  generate / evaluate / plan / drill …
         ▼
-  ModelProvider  ──▶  your LLM (mock / gateway / Horus)
+  ModelProvider  ──▶  LLM (mock / gateway / Horus HTTP)
         │
         ▼
-  GroundingPort  ──▶  real sources (Hacker News, Reddit, docs) — tips aren't made up
+  GroundingPort  ──▶  HN or Reddit (proof links on tips — after the AI writes them)
 ```
+
+---
+
+## Glossary
+
+| Term | Meaning |
+|------|---------|
+| **JD** | **Job description** — the text of a job posting (requirements, responsibilities). Paste it into tools or pick a saved job from CareerCraft. This is the main way to prep for a **specific role** (e.g. "ICU nurse" at Hospital X) without relying on hardcoded career paths. |
+| **Field** | Broad career label you pass in, e.g. `"Software Engineering"`, `"Registered Nurse"`. Used in prompts; only a few fields have tailored weights in code (see below). |
+| **Grounding** | Attaching a **real URL** (HN thread, Reddit post) to a tip the AI already wrote — or flagging it `unverified`. Not the same as researching the career from the web upfront. |
 
 ---
 
 ## What can it do?
 
-Roughly **26 tools** across five areas. You don't need to memorize them — `npm run smoke` lists everything.
+Roughly **26 tools** across five areas. Run `npm run smoke` to list them all.
 
 | Area | What you get |
 |------|----------------|
-| **Interview** | Build a prep plan, generate questions, run a full mock session (start → answer → hint → next → finish), adaptive difficulty based on how you're doing |
-| **Career** | Guidance, roadmaps, cert analysis/recommendations, log certs, set a career goal, refresh the AI persona from real data |
-| **Study** | Week-by-week study plans, spaced-repetition drills, concept explanations, track resource progress |
-| **Proof** | Tips and resources backed by *real* sources (HN threads, docs) — or flagged `unverified` if nothing credible exists |
-| **Analytics** | Pattern analysis and weekly insights from actual session history — no fake metrics |
+| **Interview** | Prep plan, questions, full mock session, hints, adaptive next question, final evaluation |
+| **Career** | Guidance, roadmaps, cert analysis/recommendations, log certs, set goal, refresh persona |
+| **Study** | Study plans, spaced-repetition drills, concept explanations, resource progress |
+| **Proof** | Tips/resources with optional source links — or `unverified` |
+| **Analytics** | Patterns and weekly insights from session history |
 
-Plus **5 MCP resources** (e.g. `careercraft://learner/context`) that agents can read without calling a tool.
+Plus **5 MCP resources** (e.g. `careercraft://learner/context`) for agents to read without a tool call.
+
+---
+
+## What's hardcoded vs dynamic
+
+Not everything comes from the web or the DB. Here's the split:
+
+### Hardcoded in TypeScript (the "rails")
+
+| File | What's fixed |
+|------|----------------|
+| `domain/career-paths.ts` | **4 career fields** + a generic default (Software Eng, DevOps/SRE, Data Science/ML, Product Management). Anything else → default weights. |
+| `domain/certifications.ts` | **~25 certs** (AWS, Azure, K8s, PMP, …). Cert tools only recommend from this catalog — no hallucinated credentials, but not career-agnostic. |
+| `domain/taxonomy.ts` | Skill names and question types used in prompts |
+| `domain/roadmap.ts` | Phase structure for roadmaps (Assess → Sharpen → Prove, etc.) |
+| `domain/prompts.ts` | Prompt templates (some still say "FAANG hiring manager" — tech-flavored) |
+
+### Dynamic (changes per user / input)
+
+| Source | What moves |
+|--------|------------|
+| **Supabase** | Skills, certs logged, interview history, scores, goals, applications, persona |
+| **JD / saved job** | Role-specific questions and plans when you pass job description text |
+| **LLM** | Questions, evaluations, guidance text, study content, roadmap fill-in |
+| **`learning_resources` table** | Resources ranked or slotted into plans (only as good as what's in your DB) |
+| **Grounding (HN/Reddit)** | Links searched at runtime — mainly for proof, not for building interview content |
+
+**Interview prep for a nurse or mechanical engineer:** pass `field` + **JD** → LLM can do reasonable Q&A. **Cert and roadmap tools** → weak unless you extend the catalog or add web retrieval (not wired into the main flows yet).
+
+---
+
+## External sources: what's actually connected
+
+This is what **really** talks to the outside world today — not what's on a roadmap.
+
+| Source | Used? | Role | API key? |
+|--------|-------|------|----------|
+| **Supabase** | ✅ Yes (prod) | Auth + all learner data | URL + anon key |
+| **AI gateway** (`HORUS_MODE=gateway`) | ✅ Yes | All LLM generation (e.g. Gemini via Lovable gateway) | `MODEL_GATEWAY_KEY` |
+| **Hacker News** (`GROUNDING_MODE=hn`) | ✅ Yes | Proof links on tips/resources (`hn.algolia.com`) | No |
+| **Reddit** (`GROUNDING_MODE=reddit`) | ✅ Optional | Same proof role (`reddit.com/search.json`) | No |
+| **Horus RAG** (`ragSearch`) | ❌ Adapter only | Code exists in `http-client.ts` — **tools never call it** | Horus |
+| **Horus graph** (`graphQuery`) | ❌ Adapter only | Same — **not used by tools** | Horus |
+| **HTTP grounding bridge** (`GROUNDING_MODE=http`) | ❌ You deploy it | Expected to front Reddit + web search + RAG — **not included in this repo** | Optional |
+| **Horus `/infer`** | ❌ Not on Horus yet | Use `gateway` for real generation instead | — |
+| **Web search (Exa, Tavily, etc.)** | ❌ Not connected | — | — |
+
+**Default dev:** `HORUS_MODE=mock` + `GROUNDING_MODE=mock` → no real AI, fake proof links.
+
+**Grounding is applied after the AI writes** (tips, coaching, some cert recs). It does **not** yet research "what do nurses get asked" before generating questions. That's the main gap if you want a career-agnostic, web-driven coach.
 
 ---
 
@@ -65,13 +124,11 @@ git clone <this-repo>
 cd interview-coach-mcp
 npm install
 
-# Runs fully offline — mock AI, mock learner, no Supabase
-HORUS_MODE=mock AUTH_MODE=dev npm start
+# Fully offline — mock AI, fake proof, canned learner, no Supabase
+HORUS_MODE=mock GROUNDING_MODE=mock AUTH_MODE=dev npm start
 ```
 
-Server starts on **http://localhost:8787**.
-
-Try it:
+Server: **http://localhost:8787**
 
 ```bash
 npm run smoke          # lists all tools + resources over real MCP
@@ -81,13 +138,11 @@ curl -X POST http://localhost:8787/api/proven-tips \
   -d '{"skill": "System Design", "count": 3}'
 ```
 
-That's it. You can explore every tool without signing up for anything.
+Mock mode feels complete locally. It is not real intelligence or real persistence.
 
 ---
 
 ## Run it for real
-
-Copy the env file and fill in what you have:
 
 ```bash
 cp .env.example .env
@@ -95,97 +150,122 @@ cp .env.example .env
 
 | Variable | What it does |
 |----------|--------------|
-| `HORUS_MODE=mock` | Fake AI responses — great for dev |
-| `HORUS_MODE=gateway` | Real generation via OpenAI-compatible API (Gemini, etc.), key in `.env` |
-| `HORUS_MODE=http` | Real generation via the deployed Supabase `infer` function (key stays a server secret) — or a future Horus `/infer` |
-| `GROUNDING_MODE=hn` | Real Hacker News sources (free, no key) |
-| `GROUNDING_MODE=mock` | Canned proof sources |
+| `HORUS_MODE=mock` | Fake AI — dev only |
+| `HORUS_MODE=gateway` | Real LLM via OpenAI-compatible API |
+| `HORUS_MODE=http` | Horus for RAG/graph; generation needs `/infer` (not shipped) or use gateway |
+| `GROUNDING_MODE=hn` | Real Hacker News proof links |
+| `GROUNDING_MODE=reddit` | Real Reddit proof links |
+| `GROUNDING_MODE=mock` | Fake proof sources |
 | `SUPABASE_URL` + `SUPABASE_ANON_KEY` | Real user data, RLS-scoped |
-| `AUTH_MODE=dev` | Skip auth, use a fake learner — **local only, never prod** |
+| `AUTH_MODE=dev` | Skip auth, canned learner — **never in production** |
 
-**With CareerCraft's web UI** (both repos): the `.env` is already configured for the real path — generation goes through the deployed Supabase `infer` function (which holds the model key as a secret), so there's no key to add here.
+**With CareerCraft's web UI:**
 
 ```bash
-# interview-coach-mcp/.env  (already set)
-HORUS_MODE=http
-HORUS_BASE_URL=https://<project>.supabase.co/functions/v1
-HORUS_API_KEY=<shared secret, = INFER_SHARED_SECRET on Supabase>
+# interview-coach-mcp/.env
+HORUS_MODE=gateway
+MODEL_GATEWAY_KEY=<your key>
 GROUNDING_MODE=hn
 SUPABASE_URL=<your supabase url>
 SUPABASE_ANON_KEY=<your anon key>
 CORS_ORIGIN=http://localhost:8080
 
-npm start   # :8787 — real Supabase data + real Gemini, no local model key
+npm start   # :8787
 
-# careercraft-pages/packages/careercraft-web/.env.local (already set)
-#   VITE_INTERVIEW_MCP_URL=http://localhost:8787
-npm run dev:web   # :8080 → sign in, open Interview Prep → Career Development
+# careercraft-pages — VITE_INTERVIEW_MCP_URL=http://localhost:8787
+npm run dev:web   # :8080
 ```
 
-If the MCP isn't reachable, the UI shows "not available" — it won't silently fall back to fake data.
+If the MCP is down, the UI shows "not available" — no silent mock fallback.
+
+**Example — role-specific interview (any field):**
+
+```json
+POST /api/interview/questions
+{
+  "field": "Registered Nurse",
+  "seniority": "Mid-Level",
+  "jobDescription": "<paste the full job posting here>",
+  "count": 6
+}
+```
+
+The **JD** does more work than `field` alone for non-tech roles.
 
 ---
 
 ## How auth works
 
-The caller sends a **Supabase JWT** in the `Authorization` header. The server verifies it, opens an RLS-scoped DB client, and uses *that user's* data.
+Caller sends a **Supabase JWT** in `Authorization: Bearer …`. Server verifies it and opens an RLS-scoped DB client.
 
-Important: the server **never trusts a `userId` passed in the tool body**. Identity always comes from the token. That's on purpose.
+The server **never trusts `userId` in the tool body** — identity always comes from the token.
 
-In dev mode (`AUTH_MODE=dev`), auth is skipped and you get a canned learner profile so you can click through everything without logging in.
+`AUTH_MODE=dev` skips verification and uses a canned learner; DB writes are blocked or best-effort.
 
 ---
 
-## How the AI layer works (the one rule)
+## How the AI layer works
 
-This repo **never imports OpenAI, Anthropic, or Gemini directly**.
-
-All generation goes through one interface — `ModelProvider` (`src/adapters/horus/port.ts`):
+This repo **does not import OpenAI / Anthropic / Gemini directly**. All generation goes through `ModelProvider` (`src/adapters/horus/port.ts`):
 
 ```ts
 await horus.infer({
   task: "interview.evaluate_answer",
-  system: "...your expert rubric prompt...",
+  system: "...",
   messages: [{ role: "user", content: user }],
-  model: "deep",   // "fast" | "deep" — routing tier, not a model name
+  model: "deep",   // "fast" | "deep" — capability tier, not a model id
   userRef: auth.userId,
 });
 ```
 
-Swap the adapter in `src/adapters/horus/index.ts` and the whole server works with your LLM. Nothing else changes.
+Swap the adapter in `src/adapters/horus/index.ts` to use your own LLM.
 
-Same idea for sources: `GroundingPort` (`src/adapters/grounding/port.ts`) — the model *proposes* tips, grounding *proves* them.
+`GroundingPort` is separate: model *proposes*, grounding *attaches a link* (or returns null → unverified).
 
 ---
 
-## Project layout (if you want to contribute)
+## Database
+
+Tied to **CareerCraft's Supabase schema** — not generic Postgres. Tables include `interview_*`, `user_skills`, `user_certifications`, `score_history`, `learning_resources`, `ai_recommendations`, etc.
+
+No migrations live in this repo. Persistence is **best-effort**: failed writes are often swallowed; check `_meta.persisted` in responses when debugging.
+
+---
+
+## Personalization flywheel
+
+When Supabase is real and writes land:
+
+1. Signals in — answers, drills, certs, resource completion, session streaks  
+2. `assembleLearnerContext()` — one object for all tools  
+3. Tools bias toward weak skills, goals, expiring certs  
+4. `refresh_persona` — long-term coach memory in `profiles.ai_persona`  
+
+Without real auth + DB, you only get the canned dev profile or generic LLM output.
+
+---
+
+## Project layout
 
 ```
 src/
-├── server.ts              ← HTTP entry (MCP + REST)
-├── server/build-server.ts ← registers all tools per request
-├── tools/                 ← one file per area (interview, career, study, proof, analytics)
-├── context/assemble.ts    ← pulls learner profile from DB into one object
-├── domain/                ← pure logic: adaptive difficulty, prompts, cert catalog, SM-2 scheduling
+├── server.ts              ← HTTP (MCP + REST)
+├── server/build-server.ts ← registers tools per request
+├── tools/                 ← interview, career, study, profile, proof, analytics, learning
+├── context/               ← assemble.ts (read profile), persist.ts (write skills/patterns)
+├── domain/                ← prompts, adaptive, certs, roadmap, taxonomy (much of this is hardcoded)
 ├── adapters/
 │   ├── horus/             ← ModelProvider (mock / gateway / http)
-│   └── grounding/         ← GroundingPort (mock / HN / reddit / http)
-└── schemas.ts             ← Zod validation for tool inputs
+│   ├── grounding/         ← GroundingPort (mock / hn / reddit / http)
+│   └── supabase.ts        ← JWT → RLS client
+└── schemas.ts             ← Zod inputs for tools
 ```
 
-**Good first contributions:**
-- Add a tool in `src/tools/` and register it in `build-server.ts` + a REST route in `server.ts`
-- Improve prompts in `src/domain/prompts.ts`
-- Add a new grounding source in `src/adapters/grounding/`
-- Unit tests for pure functions in `src/domain/` (no mocks needed)
-
-PRs welcome. If you're not sure where something fits, open an issue first — happy to point you in the right direction.
+**Good contributions:** wire `ragSearch` or web search **before** prompts (career-agnostic research), new grounding connectors, tests for `domain/*`, honest error logging on failed DB writes.
 
 ---
 
-## REST routes (for web apps)
-
-Every route maps 1:1 to an MCP tool. Full list:
+## REST routes
 
 | Route | Tool |
 |-------|------|
@@ -216,37 +296,19 @@ Every route maps 1:1 to an MCP tool. Full list:
 | `POST /api/analytics/patterns` | `analyze_patterns` |
 | `POST /api/analytics/weekly` | `weekly_insight` |
 
-MCP endpoint: `POST /mcp` · Health check: `GET /health`
+`POST /mcp` · `GET /health`
 
 ---
 
-## Personalization (why it's not just a prompt)
+## Known limitations (honest)
 
-Every interaction feeds back into the learner profile:
-
-1. **Signals in** — interview answers, drill scores, logged certs, completed resources, session streaks
-2. **One context object** — `assembleLearnerContext()` merges skills, certs, goal, job pipeline, scores, patterns
-3. **Everything uses it** — questions target weak skills, roadmaps start from real proficiencies, cert advice knows what's expiring
-4. **`refresh_persona`** — periodically rewrites the long-term AI persona from all of the above
-
-No hidden cache. It's all in Postgres, scoped to the user via RLS.
-
----
-
-## Database
-
-Reads/writes CareerCraft's existing Supabase tables — `interview_*`, `user_skills`, `user_certifications`, `score_history`, `learning_resources`, etc. **No new tables required** to run against an existing CareerCraft project.
-
-Persistence calls are best-effort: if a column is missing or the schema differs, the tool still returns a useful response — it just might not save that particular field.
-
----
-
-## Known limitations
-
-- **Horus** doesn't expose a generic `/infer` endpoint yet, so generation is bridged today by the deployed Supabase `infer` function (`HORUS_MODE=http`, real Gemini, model key stays a server secret). When Horus ships `/infer`, repoint `HORUS_BASE_URL` and delete the function. (`gateway`/`mock` modes still available.)
-- **Grounding bridge** (Reddit MCP + web search + Horus RAG composed together) isn't wired yet — HN client works today.
-- **Voice interviews** (`interview.voice`) — not built yet.
-- **Calendar export** for roadmap weekly blocks — not built yet.
+- **Not career-agnostic by default** — cert catalog, career paths, and prompts skew tech. JD + LLM helps interviews; cert/roadmap/proof layers don't generalize automatically.
+- **Web research not in the hot path** — HN/Reddit prove tips after the fact; Horus RAG and web search aren't called when building plans or questions.
+- **Horus `/infer`** — not available; use `HORUS_MODE=gateway` for real generation.
+- **HTTP grounding bridge** — not shipped; compose Reddit + search + RAG yourself if you want it.
+- **No automated tests** — `npm run smoke` only lists tools; correctness unverified.
+- **Silent DB failures** — many writes in try/catch; response can look fine when nothing saved.
+- **Voice interviews, calendar export** — not built.
 
 ---
 
@@ -254,15 +316,15 @@ Persistence calls are best-effort: if a column is missing or the schema differs,
 
 ```bash
 npm start       # run the server
-npm run dev     # run with hot reload
-npm run smoke   # MCP protocol smoke test
+npm run dev     # hot reload
+npm run smoke   # MCP list tools/resources (server must be running)
 npm run typecheck
 ```
 
-Requires **Node 18+**.
+Node **18+**.
 
 ---
 
 ## License
 
-Private / all rights reserved unless otherwise noted. Open an issue if you want to use this commercially or need a different license.
+Private / all rights reserved unless otherwise noted. Open an issue for commercial use or a different license.
