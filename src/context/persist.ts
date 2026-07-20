@@ -26,6 +26,12 @@ export interface SkillPersistResult {
   newProficiency: number | null;
 }
 
+/** Best-effort writes stay best-effort, but never silent: one warn per miss. */
+function warnDb(op: string, detail: unknown): void {
+  const msg = (detail as { message?: string })?.message ?? String(detail);
+  console.warn(`[persist] ${op} failed (change not saved): ${msg}`);
+}
+
 function proficiencyToBand(p: number): string {
   if (p >= 85) return "expert";
   if (p >= 70) return "advanced";
@@ -63,9 +69,13 @@ export async function persistSkillSignal(
   let rows: any[] = [];
   try {
     const { data, error } = await db.from("user_skills").select("*").eq("user_id", userId);
-    if (error) return none;
+    if (error) {
+      warnDb("user_skills read", error);
+      return none;
+    }
     rows = data ?? [];
-  } catch {
+  } catch (e) {
+    warnDb("user_skills read", e);
     return none;
   }
 
@@ -109,7 +119,10 @@ export async function persistSkillSignal(
   try {
     if (existing) {
       const { error } = await db.from("user_skills").update(base).eq("id", existing.id);
-      if (error) return { ...none, previousProficiency: prev };
+      if (error) {
+        warnDb(`user_skills update (${name})`, error);
+        return { ...none, previousProficiency: prev };
+      }
     } else {
       let { error } = await db.from("user_skills").insert(base);
       if (error) {
@@ -121,11 +134,15 @@ export async function persistSkillSignal(
           ...(signal.category ? { category: signal.category } : {}),
         };
         ({ error } = await db.from("user_skills").insert(minimal));
-        if (error) return none;
+        if (error) {
+          warnDb(`user_skills insert (${name})`, error);
+          return none;
+        }
       }
     }
     return { persisted: true, previousProficiency: existing ? prev : null, newProficiency: next };
-  } catch {
+  } catch (e) {
+    warnDb(`user_skills write (${name})`, e);
     return none;
   }
 }
@@ -178,8 +195,10 @@ export async function touchPracticePatterns(
     const { error } = data?.id
       ? await db.from("user_patterns").update(patch).eq("id", data.id)
       : await db.from("user_patterns").insert(patch);
+    if (error) warnDb("user_patterns upsert", error);
     return !error;
-  } catch {
+  } catch (e) {
+    warnDb("user_patterns upsert", e);
     return false;
   }
 }

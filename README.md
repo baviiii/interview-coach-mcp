@@ -196,7 +196,9 @@ cp .env.example .env
 | `RESEARCH_MODE=reddit` / `mock` / `off` | Reddit only / offline canned / disabled |
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Free Reddit app creds → reliable Reddit research (anonymous often 403s) |
 | `SUPABASE_URL` + `SUPABASE_ANON_KEY` | Real user data, RLS-scoped |
-| `AUTH_MODE=dev` | Skip auth, canned learner — **never in production** |
+| `AUTH_MODE=dev` | Skip auth, canned learner — **never in production** (the server refuses to boot with it when `NODE_ENV=production`) |
+| `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX` | Per-user (hashed token, else IP) rate limit on `/mcp` + `/api` — default 60 req/min. A spend cap: every request can trigger research + a paid LLM call |
+| `LLM_TIMEOUT_MS` | Hard cap per model call (default 60s) — a hung gateway no longer hangs the request |
 
 **With CareerCraft's web UI:**
 
@@ -347,9 +349,27 @@ src/
 - **No paid web search yet** — Exa/Tavily would broaden coverage (courses, salary, niche credentials) behind the same `ResearchPort` seam, but aren't wired (kept $0 by choice).
 - **Horus `/infer`** — not available; use `HORUS_MODE=gateway` for real generation.
 - **HTTP grounding bridge** — not shipped; compose Reddit + search + RAG yourself if you want it.
-- **Light tests** — `npm test` covers the research/cert pure logic; `npm run smoke` lists tools. Tool I/O against a live LLM is still unverified by CI.
-- **Silent DB failures** — many writes in try/catch; response can look fine when nothing saved.
+- **Tests cover mock mode, not a live LLM** — CI runs typecheck + unit tests + an offline e2e golden path (start → answer → finish over real HTTP). Tool I/O against a *live* LLM is still unverified by CI.
+- **DB failures are best-effort but no longer silent** — failed writes log a `[persist]` warning and `_meta.persisted` reflects the truth; the response itself still succeeds by design.
+- **Rate limit is single-instance** — the in-memory limiter guards one process; put a shared limiter in front if you scale out.
 - **Voice interviews, calendar export** — not built.
+
+---
+
+## Deploy
+
+```bash
+docker build -t interview-coach-mcp .
+docker run -p 8787:8787 --env-file .env -e NODE_ENV=production interview-coach-mcp
+```
+
+Or point any Node host (Railway, Render, Fly) at `npm start` — no build step needed.
+In production set `NODE_ENV=production` (enforces the auth guard), a real
+`CORS_ORIGIN`, and the free `REDDIT_CLIENT_ID/SECRET` (datacenter IPs can't use
+anonymous Reddit — without creds your best research source silently drops out).
+
+CI (`.github/workflows/ci.yml`) runs typecheck + unit tests + the offline e2e
+golden path on every push.
 
 ---
 
@@ -360,6 +380,7 @@ npm start       # run the server
 npm run dev     # hot reload
 npm run smoke   # MCP list tools/resources (server must be running)
 npm test        # pure unit checks for the research + cert-merge logic (no network)
+npm run e2e     # boots the server offline (mock everything) and walks the golden path
 npm run typecheck
 ```
 

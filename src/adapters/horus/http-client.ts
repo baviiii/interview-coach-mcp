@@ -17,6 +17,8 @@ export interface HttpHorusConfig {
   /** Defaults to `${baseUrl}/graph-query`. */
   graphUrl?: string;
   tenant: string;
+  /** Hard cap per request — a hung upstream otherwise hangs the tool call forever. */
+  timeoutMs?: number;
 }
 
 /**
@@ -44,14 +46,20 @@ export class HttpHorusClient implements HorusPort {
   }
 
   private async post<R>(url: string, body: unknown): Promise<R> {
+    const timeoutMs = this.cfg.timeoutMs ?? 60_000;
     let res: Response;
     try {
       res = await fetch(url, {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
+      const name = (err as Error).name;
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new UpstreamError(`Horus timed out after ${timeoutMs}ms`);
+      }
       throw new UpstreamError(`Horus request failed: ${(err as Error).message}`);
     }
     if (!res.ok) {

@@ -25,6 +25,7 @@ export function getModelProvider(): ModelProvider {
       apiKey: config.gateway.apiKey,
       fast: config.gateway.fast,
       deep: config.gateway.deep,
+      timeoutMs: config.limits.llmTimeoutMs,
     });
   } else if (config.horus.mode === "http") {
     if (!config.horus.baseUrl) {
@@ -36,6 +37,7 @@ export function getModelProvider(): ModelProvider {
       ragUrl: config.horus.ragUrl,
       graphUrl: config.horus.graphUrl,
       tenant: config.horus.tenant,
+      timeoutMs: config.limits.llmTimeoutMs,
     });
   } else {
     singleton = new MockHorusClient();

@@ -14,6 +14,8 @@ export interface GatewayConfig {
   fast: string;
   /** Model id for the "deep" capability tier. */
   deep: string;
+  /** Hard cap per request — a hung gateway otherwise hangs the tool call forever. */
+  timeoutMs?: number;
 }
 
 /**
@@ -31,6 +33,7 @@ export class GatewayModelProvider implements ModelProvider {
   async infer<T = unknown>(req: InferRequest): Promise<InferResult<T>> {
     const model = req.model === "deep" ? this.cfg.deep : this.cfg.fast;
 
+    const timeoutMs = this.cfg.timeoutMs ?? 60_000;
     let res: Response;
     try {
       res = await fetch(this.cfg.url, {
@@ -49,8 +52,13 @@ export class GatewayModelProvider implements ModelProvider {
           temperature: req.temperature ?? 0.7,
           max_tokens: req.maxTokens ?? 4000,
         }),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
+      const name = (err as Error).name;
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new UpstreamError(`Gateway timed out after ${timeoutMs}ms`);
+      }
       throw new UpstreamError(`Gateway request failed: ${(err as Error).message}`);
     }
 

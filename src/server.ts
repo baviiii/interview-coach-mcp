@@ -12,7 +12,19 @@ import { config } from "./config.js";
 import { AppError } from "./errors.js";
 import { authenticate, extractBearer, type AuthContext } from "./server/auth.js";
 import { buildServer } from "./server/build-server.js";
+import { rateLimit } from "./server/rate-limit.js";
 import type { ToolDeps } from "./tools/interview.js";
+
+// AUTH_MODE=dev serves a canned identity with no verification — an open
+// server. Refuse to boot rather than let a misconfigured deploy go live.
+const isProd = process.env.NODE_ENV === "production";
+if (isProd && process.env.AUTH_MODE === "dev") {
+  console.error("FATAL: AUTH_MODE=dev bypasses all auth and must never run with NODE_ENV=production.");
+  process.exit(1);
+}
+if (isProd && (process.env.CORS_ORIGIN === undefined || process.env.CORS_ORIGIN === "*")) {
+  console.warn("WARNING: CORS_ORIGIN is '*' in production — set it to your web app's origin.");
+}
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -28,6 +40,18 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// One line per request so prod has a trail: route, status, duration.
+app.use((req, res, next) => {
+  if (req.path === "/health") return next();
+  const startedAt = Date.now();
+  res.on("finish", () => {
+    console.log(`${req.method} ${req.path} ${res.statusCode} ${Date.now() - startedAt}ms`);
+  });
+  next();
+});
+
+app.use(["/mcp", "/api"], rateLimit({ windowMs: config.limits.rateWindowMs, max: config.limits.rateMax }));
 
 app.get("/health", (_req, res) => {
   res.json({

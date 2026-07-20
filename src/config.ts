@@ -67,6 +67,16 @@ export const config = {
     clientSecret: opt("REDDIT_CLIENT_SECRET"),
     userAgent: opt("REDDIT_USER_AGENT", "interview-coach-mcp/0.2 (career interview research)")!,
   },
+
+  // Cost/abuse guards. Every /mcp and /api hit can fan out to research sources
+  // plus a paid LLM call, so the rate limit is a spend cap as much as an abuse
+  // guard. llmTimeoutMs bounds every model call (a hung upstream otherwise
+  // hangs the request forever).
+  limits: {
+    rateWindowMs: Number(opt("RATE_LIMIT_WINDOW_MS", "60000")),
+    rateMax: Number(opt("RATE_LIMIT_MAX", "60")),
+    llmTimeoutMs: Number(opt("LLM_TIMEOUT_MS", "60000")),
+  },
 } as const;
 
 export function requireSupabaseConfig(): { url: string; anonKey: string } {
