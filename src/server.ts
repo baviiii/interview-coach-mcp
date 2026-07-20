@@ -7,6 +7,7 @@ import express, { type Request, type Response } from "express";
 
 import { getGrounding } from "./adapters/grounding/index.js";
 import { getModelProvider } from "./adapters/horus/index.js";
+import { getResearch } from "./adapters/research/index.js";
 import { config } from "./config.js";
 import { AppError } from "./errors.js";
 import { authenticate, extractBearer, type AuthContext } from "./server/auth.js";
@@ -29,14 +30,20 @@ app.use((req, res, next) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, name: "interview-coach-mcp", horus: config.horus.mode, grounding: config.grounding.mode });
+  res.json({
+    ok: true,
+    name: "interview-coach-mcp",
+    horus: config.horus.mode,
+    grounding: config.grounding.mode,
+    research: config.research.mode,
+  });
 });
 
 // ── MCP surface (for agents / the turnkey sale) ───────────────────────────
 app.post("/mcp", async (req, res) => {
   try {
     const auth = await resolveAuth(req.headers["authorization"]);
-    const server = buildServer({ auth, horus: getModelProvider(), grounding: getGrounding() });
+    const server = buildServer({ auth, horus: getModelProvider(), grounding: getGrounding(), research: getResearch() });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {
       void transport.close();
@@ -56,7 +63,7 @@ app.delete("/mcp", (_req, res) => res.status(405).json({ error: "Method not allo
 const rest = (tool: string) => async (req: Request, res: Response) => {
   try {
     const auth = await resolveAuth(req.headers["authorization"]);
-    const deps: ToolDeps = { auth, horus: getModelProvider(), grounding: getGrounding() };
+    const deps: ToolDeps = { auth, horus: getModelProvider(), grounding: getGrounding(), research: getResearch() };
     res.json(await callTool(deps, tool, (req.body as Record<string, unknown>) ?? {}));
   } catch (e) {
     sendErr(res, e);
@@ -95,7 +102,7 @@ app.post("/api/study/resource/progress", rest("track_resource_progress"));
 
 app.listen(config.port, () => {
   console.log(
-    `interview-coach-mcp listening on :${config.port} (horus=${config.horus.mode}, grounding=${config.grounding.mode})`,
+    `interview-coach-mcp listening on :${config.port} (horus=${config.horus.mode}, grounding=${config.grounding.mode}, research=${config.research.mode})`,
   );
 });
 

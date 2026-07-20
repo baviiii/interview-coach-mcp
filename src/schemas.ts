@@ -21,14 +21,27 @@ export const generateQuestionsInput = {
   jobId: z.string().uuid().optional(),
   jobDescription: z.string().max(20000).optional(),
   focusAreas: z.array(z.string()).optional(),
-  count: z.number().int().min(3).max(10).optional(),
+  // Clamp instead of reject: LLM callers routinely ask for 1-2 questions,
+  // and a hard minimum turns that into a tool error mid-conversation.
+  count: z.coerce
+    .number()
+    .int()
+    .optional()
+    .transform((n) => (n === undefined ? undefined : Math.min(Math.max(n, 1), 10))),
 };
 
 export const startSessionInput = {
   field: z.string().min(1),
   seniority: z.string().optional(),
   jobId: z.string().uuid().optional(),
-  questionCount: z.number().int().min(3).max(10).optional(),
+  jobDescription: z.string().max(20000).optional(),
+  // Round focus (e.g. from build_interview_plan) — steers question coverage.
+  focusAreas: z.array(z.string().max(200)).max(12).optional(),
+  questionCount: z.coerce
+    .number()
+    .int()
+    .optional()
+    .transform((n) => (n === undefined ? undefined : Math.min(Math.max(n, 1), 10))),
 };
 
 export const submitAnswerInput = {
@@ -47,6 +60,8 @@ export const nextQuestionInput = {
   sessionId: z.string().uuid(),
   field: z.string().min(1),
   seniority: z.string().optional(),
+  // Round focus (e.g. from build_interview_plan) — steers what gets probed next.
+  focusAreas: z.array(z.string().max(200)).max(12).optional(),
 };
 
 export const finishInput = {

@@ -4,7 +4,7 @@ An MCP server that acts as the **brain** behind a career coach — mock intervie
 
 Built for [CareerCraft](https://github.com/) (the web app), but you can run it on its own, plug it into any MCP client (Cursor, Claude Desktop, etc.), or wire it into your own product.
 
-**Be honest about scope:** this is strongest as a **structured coach for tech-ish careers** (software, DevOps, data, PM). Other fields can work for **mock interviews if you pass a job description** — but cert catalogs, career paths, and proof sources are still tech-biased today. See [What's hardcoded vs dynamic](#whats-hardcoded-vs-dynamic) and [External sources](#external-sources-whats-actually-connected).
+**Scope (honest):** it now works for **any field** — nurse, electrician, teacher, accountant, paralegal, chef — because before generating it **researches the field from free, real sources** (Reddit, Hacker News, Wikipedia) and feeds those *cited* findings into the prompt. So a nurse gets NCLEX/licensure (with source links), not AWS. Tech fields additionally get a curated cert catalog as a fast-path. The one caveat: Reddit's anonymous endpoint is often rate-limited (403) from datacenter IPs — add **free** Reddit app credentials to make it reliable (Wikipedia + HN need nothing). See [Live research](#live-research-grounded-before-generating), [What's hardcoded vs dynamic](#whats-hardcoded-vs-dynamic) and [External sources](#external-sources-whats-actually-connected).
 
 ---
 
@@ -31,7 +31,11 @@ Your app or MCP client
         ▼
   interview-coach-mcp  ──▶  Supabase (skills, sessions, certs, scores, resources)
         │
-        │  generate / evaluate / plan / drill …
+        │  research the field FIRST (any field, free + cited)
+        ▼
+  ResearchPort   ──▶  Reddit · Hacker News · Wikipedia · your RAG
+        │
+        │  generate / evaluate / plan / drill … (prompt now carries real signals)
         ▼
   ModelProvider  ──▶  LLM (mock / gateway / Horus HTTP)
         │
@@ -47,7 +51,8 @@ Your app or MCP client
 |------|---------|
 | **JD** | **Job description** — the text of a job posting (requirements, responsibilities). Paste it into tools or pick a saved job from CareerCraft. This is the main way to prep for a **specific role** (e.g. "ICU nurse" at Hospital X) without relying on hardcoded career paths. |
 | **Field** | Broad career label you pass in, e.g. `"Software Engineering"`, `"Registered Nurse"`. Used in prompts; only a few fields have tailored weights in code (see below). |
-| **Grounding** | Attaching a **real URL** (HN thread, Reddit post) to a tip the AI already wrote — or flagging it `unverified`. Not the same as researching the career from the web upfront. |
+| **Research** | Pulling **real, cited material about a field BEFORE generating** — the questions people report, where they struggled, the licenses/certs the field expects, the courses the community recommends — from free sources, and feeding it into the prompt. This is what makes the coach career-agnostic. |
+| **Grounding** | Attaching a **real URL** (HN thread, Reddit post) to a tip the AI already wrote — or flagging it `unverified`. The *after-the-fact* complement to Research's *before-the-fact* sourcing. |
 
 ---
 
@@ -67,6 +72,35 @@ Plus **5 MCP resources** (e.g. `careercraft://learner/context`) for agents to re
 
 ---
 
+## Live research (grounded before generating)
+
+The thing that makes this work for **any** field. Before a tool generates, it asks the `ResearchPort` for real, **cited** material about the field and feeds it into the prompt as `REAL-WORLD SIGNALS`. The model is told to mirror those themes, only name credentials/resources that appear there, and never invent a source.
+
+| Bucket | Example for "Registered Nurse" | Source |
+|--------|--------------------------------|--------|
+| **questions** | "Tell me about a time you advocated for a patient against a physician's order." | Reddit, HN |
+| **experiences** ("users who had issues") | "I bombed the situational judgment portion because I rushed." | Reddit |
+| **credentials** | NCLEX-RN, BLS, state licensure | Wikipedia, Reddit |
+| **resources** | community-recommended review courses/books | Reddit, HN |
+| **facts** | what the role is + entry requirements | Wikipedia |
+
+**All free, no API key.** Modes (`RESEARCH_MODE`): `auto` (default — Reddit + HN + Wikipedia + your RAG), `reddit`, `mock` (offline), `off` (degrade to pre-research behavior).
+
+Tools wired to research: `generate_contextual_questions`, `start_interview_session`, `build_interview_plan`, `get_proven_tips`, `find_proven_resources`, `rank_learning_resources`, `recommend_certifications`, `analyze_certifications`, `career_guidance`, `build_career_roadmap`, `build_study_plan`. Each surfaces its real sources in `_meta.research`.
+
+**The Reddit caveat (important):** Reddit's anonymous `search.json` is now commonly **403-blocked from datacenter IPs** (any User-Agent). Wikipedia + Hacker News work everywhere with zero config. To make Reddit reliable, add **free** app credentials (no cost — just register at `reddit.com/prefs/apps`):
+
+```bash
+REDDIT_CLIENT_ID=...      # free "script"/"web app"
+REDDIT_CLIENT_SECRET=...
+```
+
+With those set, research uses Reddit's app-only OAuth endpoint instead. Everything stays $0.
+
+It's **best-effort**: a blocked/slow source is dropped, `_meta.research.partial` flags it, and the tool still produces output from whatever real signals it did get (or its pre-research behavior if none).
+
+---
+
 ## What's hardcoded vs dynamic
 
 Not everything comes from the web or the DB. Here's the split:
@@ -75,8 +109,8 @@ Not everything comes from the web or the DB. Here's the split:
 
 | File | What's fixed |
 |------|----------------|
-| `domain/career-paths.ts` | **4 career fields** + a generic default (Software Eng, DevOps/SRE, Data Science/ML, Product Management). Anything else → default weights. |
-| `domain/certifications.ts` | **~25 certs** (AWS, Azure, K8s, PMP, …). Cert tools only recommend from this catalog — no hallucinated credentials, but not career-agnostic. |
+| `domain/career-paths.ts` | **4 career fields** + a generic default (Software Eng, DevOps/SRE, Data Science/ML, Product Management). Anything else → field-neutral default weights (universal soft skills); real focus now comes from research. |
+| `domain/certifications.ts` | **~25 certs** (AWS, Azure, K8s, PMP, …) — now a **fast-path/fallback, no longer the ceiling**. Cert tools merge this with credentials *researched* for the field (each with a source), and the tech catalog is **not** dumped on non-tech fields. |
 | `domain/taxonomy.ts` | Skill names and question types used in prompts |
 | `domain/roadmap.ts` | Phase structure for roadmaps (Assess → Sharpen → Prove, etc.) |
 | `domain/prompts.ts` | Prompt templates (some still say "FAANG hiring manager" — tech-flavored) |
@@ -89,9 +123,10 @@ Not everything comes from the web or the DB. Here's the split:
 | **JD / saved job** | Role-specific questions and plans when you pass job description text |
 | **LLM** | Questions, evaluations, guidance text, study content, roadmap fill-in |
 | **`learning_resources` table** | Resources ranked or slotted into plans (only as good as what's in your DB) |
-| **Grounding (HN/Reddit)** | Links searched at runtime — mainly for proof, not for building interview content |
+| **Research (Reddit/HN/Wikipedia/RAG)** | Real, cited field material fetched at runtime **before** generation — questions, pain points, credentials, resources, facts. This is the career-agnostic engine. |
+| **Grounding (HN/Reddit)** | Links searched at runtime — proof attached to tips *after* the AI writes them |
 
-**Interview prep for a nurse or mechanical engineer:** pass `field` + **JD** → LLM can do reasonable Q&A. **Cert and roadmap tools** → weak unless you extend the catalog or add web retrieval (not wired into the main flows yet).
+**Interview prep for a nurse or mechanical engineer:** just pass `field` (a JD still helps). Questions, tips, **cert/roadmap, and resource tools now research the field first** (free) and ground on what they find — credentials come from Wikipedia/Reddit with source links, not the tech catalog. Quality scales with what the free sources return for that field (and with Reddit creds set, per [Live research](#live-research-grounded-before-generating)).
 
 ---
 
@@ -103,17 +138,18 @@ This is what **really** talks to the outside world today — not what's on a roa
 |--------|-------|------|----------|
 | **Supabase** | ✅ Yes (prod) | Auth + all learner data | URL + anon key |
 | **AI gateway** (`HORUS_MODE=gateway`) | ✅ Yes | All LLM generation (e.g. Gemini via Lovable gateway) | `MODEL_GATEWAY_KEY` |
-| **Hacker News** (`GROUNDING_MODE=hn`) | ✅ Yes | Proof links on tips/resources (`hn.algolia.com`) | No |
-| **Reddit** (`GROUNDING_MODE=reddit`) | ✅ Optional | Same proof role (`reddit.com/search.json`) | No |
-| **Horus RAG** (`ragSearch`) | ❌ Adapter only | Code exists in `http-client.ts` — **tools never call it** | Horus |
-| **Horus graph** (`graphQuery`) | ❌ Adapter only | Same — **not used by tools** | Horus |
+| **Hacker News** (`hn.algolia.com`) | ✅ Yes | **Research** (questions/resources, any field) + proof links | No |
+| **Wikipedia** (Action API) | ✅ Yes | **Research** — role facts + the credentials/licenses a field expects | No |
+| **Reddit** (`reddit.com`) | ✅ Yes | **Research** ("users who had issues") + proof. Anonymous often 403s → set free `REDDIT_CLIENT_ID/SECRET` for app-only OAuth | No (free creds recommended) |
+| **Horus RAG** (`ragSearch`) | ✅ When provided | **Now called by research** (`HorusRagResearchSource`) — your curated corpus, if the provider implements `ragSearch` | Horus |
+| **Horus graph** (`graphQuery`) | ❌ Adapter only | Still not used by tools | Horus |
 | **HTTP grounding bridge** (`GROUNDING_MODE=http`) | ❌ You deploy it | Expected to front Reddit + web search + RAG — **not included in this repo** | Optional |
 | **Horus `/infer`** | ❌ Not on Horus yet | Use `gateway` for real generation instead | — |
 | **Web search (Exa, Tavily, etc.)** | ❌ Not connected | — | — |
 
-**Default dev:** `HORUS_MODE=mock` + `GROUNDING_MODE=mock` → no real AI, fake proof links.
+**Default dev:** `HORUS_MODE=mock` + `GROUNDING_MODE=mock` + `RESEARCH_MODE=mock` → no real AI, fake proof, canned research.
 
-**Grounding is applied after the AI writes** (tips, coaching, some cert recs). It does **not** yet research "what do nurses get asked" before generating questions. That's the main gap if you want a career-agnostic, web-driven coach.
+**Two layers now:** **Research runs *before* the AI writes** ("what do nurses actually get asked / struggle with / need certified") and feeds real cited material into the prompt — this is the career-agnostic engine. **Grounding still runs *after*** (a proof link on a finished tip). The old "main gap" (no upfront research) is closed for the free sources above; paid web search (Exa/Tavily) behind the same `ResearchPort` seam is the next step if you want broader coverage.
 
 ---
 
@@ -124,8 +160,8 @@ git clone <this-repo>
 cd interview-coach-mcp
 npm install
 
-# Fully offline — mock AI, fake proof, canned learner, no Supabase
-HORUS_MODE=mock GROUNDING_MODE=mock AUTH_MODE=dev npm start
+# Fully offline — mock AI, fake proof, canned research, canned learner, no Supabase
+HORUS_MODE=mock GROUNDING_MODE=mock RESEARCH_MODE=mock AUTH_MODE=dev npm start
 ```
 
 Server: **http://localhost:8787**
@@ -156,6 +192,9 @@ cp .env.example .env
 | `GROUNDING_MODE=hn` | Real Hacker News proof links |
 | `GROUNDING_MODE=reddit` | Real Reddit proof links |
 | `GROUNDING_MODE=mock` | Fake proof sources |
+| `RESEARCH_MODE=auto` | **Live field research** (free): Reddit + HN + Wikipedia + your RAG — the default |
+| `RESEARCH_MODE=reddit` / `mock` / `off` | Reddit only / offline canned / disabled |
+| `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Free Reddit app creds → reliable Reddit research (anonymous often 403s) |
 | `SUPABASE_URL` + `SUPABASE_ANON_KEY` | Real user data, RLS-scoped |
 | `AUTH_MODE=dev` | Skip auth, canned learner — **never in production** |
 
@@ -256,12 +295,13 @@ src/
 ├── domain/                ← prompts, adaptive, certs, roadmap, taxonomy (much of this is hardcoded)
 ├── adapters/
 │   ├── horus/             ← ModelProvider (mock / gateway / http)
-│   ├── grounding/         ← GroundingPort (mock / hn / reddit / http)
+│   ├── grounding/         ← GroundingPort (mock / hn / reddit / http) — proof AFTER
+│   ├── research/          ← ResearchPort (reddit / hn / wikipedia / rag) — research BEFORE
 │   └── supabase.ts        ← JWT → RLS client
 └── schemas.ts             ← Zod inputs for tools
 ```
 
-**Good contributions:** wire `ragSearch` or web search **before** prompts (career-agnostic research), new grounding connectors, tests for `domain/*`, honest error logging on failed DB writes.
+**Good contributions:** a paid web-search `ResearchSource` (Exa/Tavily) behind the existing `ResearchPort` seam, more research sources (Glassdoor-style, official licensing boards), better credential-name extraction, more tests for `domain/*`, honest error logging on failed DB writes.
 
 ---
 
@@ -302,11 +342,12 @@ src/
 
 ## Known limitations (honest)
 
-- **Not career-agnostic by default** — cert catalog, career paths, and prompts skew tech. JD + LLM helps interviews; cert/roadmap/proof layers don't generalize automatically.
-- **Web research not in the hot path** — HN/Reddit prove tips after the fact; Horus RAG and web search aren't called when building plans or questions.
+- **Career-agnostic now, but quality scales with the sources** — research grounds any field, but output is only as rich as what Reddit/HN/Wikipedia return for it. Thin niches get thinner grounding.
+- **Reddit anonymous is often 403'd** — set free `REDDIT_CLIENT_ID/SECRET` for reliable Reddit research; otherwise it leans on Wikipedia + HN. See [Live research](#live-research-grounded-before-generating).
+- **No paid web search yet** — Exa/Tavily would broaden coverage (courses, salary, niche credentials) behind the same `ResearchPort` seam, but aren't wired (kept $0 by choice).
 - **Horus `/infer`** — not available; use `HORUS_MODE=gateway` for real generation.
 - **HTTP grounding bridge** — not shipped; compose Reddit + search + RAG yourself if you want it.
-- **No automated tests** — `npm run smoke` only lists tools; correctness unverified.
+- **Light tests** — `npm test` covers the research/cert pure logic; `npm run smoke` lists tools. Tool I/O against a live LLM is still unverified by CI.
 - **Silent DB failures** — many writes in try/catch; response can look fine when nothing saved.
 - **Voice interviews, calendar export** — not built.
 
@@ -318,6 +359,7 @@ src/
 npm start       # run the server
 npm run dev     # hot reload
 npm run smoke   # MCP list tools/resources (server must be running)
+npm test        # pure unit checks for the research + cert-merge logic (no network)
 npm run typecheck
 ```
 

@@ -6,6 +6,7 @@
  * names as the taxonomy/skill matrix so certs feed proficiency directly.
  */
 
+import type { ResearchSnippet } from "../adapters/research/port.js";
 import type { CertificationStatus } from "../types.js";
 
 export type CertLevel = "foundational" | "associate" | "professional" | "specialty" | "expert";
@@ -399,6 +400,12 @@ export function nextCertSuggestions(opts: {
   seniority?: string;
   ownedCatalogIds: string[];
   max?: number;
+  /**
+   * When the field matches no catalog career path, fall back to the whole tech
+   * catalog. Defaults to true (legacy behavior). Pass FALSE for non-tech fields
+   * that have researched credentials — otherwise a nurse gets AWS suggestions.
+   */
+  fallbackToAll?: boolean;
 }): CertSuggestion[] {
   const fieldNorm = norm(opts.field ?? "Software Engineering");
   const owned = new Set(opts.ownedCatalogIds);
@@ -410,7 +417,12 @@ export function nextCertSuggestions(opts: {
       return pn.includes(fieldNorm) || fieldNorm.includes(pn);
     }),
   );
-  const candidates = pool.length > 0 ? pool : CERT_CATALOG.filter((e) => !owned.has(e.id) && e.level !== "expert");
+  const candidates =
+    pool.length > 0
+      ? pool
+      : opts.fallbackToAll === false
+        ? [] // non-tech field: let researched credentials fill the list instead
+        : CERT_CATALOG.filter((e) => !owned.has(e.id) && e.level !== "expert");
 
   const scored = candidates.map((e) => {
     const fit: CertSuggestion["levelFit"] = idealLevels.includes(e.level)
@@ -429,4 +441,98 @@ export function nextCertSuggestions(opts: {
   const fitRank = { ideal: 0, stretch: 1, adjacent: 2 } as const;
   scored.sort((a, b) => fitRank[a.levelFit] - fitRank[b.levelFit] || a.prepHours[0] - b.prepHours[0]);
   return scored.slice(0, opts.max ?? 6);
+}
+
+/* ── credential candidates: curated catalog ∪ researched (any field) ───────── */
+
+/**
+ * One credential the model may recommend. Either a curated-catalog entry (full
+ * deterministic facts, `source: "catalog"`) or one researched from a real source
+ * for a non-tech field (`source` = its URL; cost/effort unknown). The merge is
+ * how the cert tools escape the 25-entry tech catalog without ever inventing a
+ * credential — researched ones always carry their source.
+ */
+export interface CredentialCandidate {
+  id: string | null;
+  name: string;
+  level?: CertLevel;
+  prepHours?: [number, number];
+  examCostUsd?: number | null;
+  marketSignal: string;
+  /** "catalog" or the URL it was researched from. */
+  source: string;
+  levelFit?: CertSuggestion["levelFit"];
+  prereqNote?: string;
+}
+
+/** A research credential snippet looks like "Page Title: extract…" (Wikipedia)
+ *  or a forum title. Promote only ones whose head reads like a credential NAME
+ *  (short, no sentence punctuation); skip ramble — it still shows as a real-world
+ *  signal in the prompt, just not as a named pick. */
+function credentialNameFrom(snippet: ResearchSnippet): string | null {
+  const colon = snippet.text.indexOf(":");
+  const head = (colon > 0 ? snippet.text.slice(0, colon) : snippet.text).replace(/\s+/g, " ").trim();
+  if (!head) return null;
+  const words = head.split(" ");
+  const looksLikeName = head.length <= 70 && words.length <= 8 && !/[.?!]/.test(head);
+  return looksLikeName ? head : null;
+}
+
+/** Merge curated suggestions with researched credentials, dedup by name, cap. */
+export function mergeCredentialCandidates(
+  catalog: CertSuggestion[],
+  researched: ResearchSnippet[],
+  max = 8,
+): CredentialCandidate[] {
+  const out: CredentialCandidate[] = [];
+  const seen = new Set<string>();
+
+  for (const c of catalog) {
+    const key = norm(c.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: c.id,
+      name: c.name,
+      level: c.level,
+      prepHours: c.prepHours,
+      examCostUsd: c.examCostUsd,
+      marketSignal: c.marketSignal,
+      source: "catalog",
+      levelFit: c.levelFit,
+      prereqNote: c.prereqNote,
+    });
+  }
+
+  for (const snippet of researched) {
+    const name = credentialNameFrom(snippet);
+    if (!name) continue;
+    const key = norm(name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: null,
+      name,
+      marketSignal: snippet.text.length > 160 ? `${snippet.text.slice(0, 159)}…` : snippet.text,
+      source: snippet.sourceUrl,
+    });
+  }
+
+  return out.slice(0, max);
+}
+
+/** Render candidates as the prompt's CANDIDATE CREDENTIALS lines. */
+export function formatCredentialCandidates(cands: CredentialCandidate[]): string {
+  if (cands.length === 0) return "(none — rely on the real-world signals above; do not invent credentials)";
+  return cands
+    .map((c) => {
+      const id = c.id ?? "—";
+      const level = c.level ?? "n/a";
+      const fit = c.levelFit ? ` (${c.levelFit} fit)` : "";
+      const prep = c.prepHours ? `${c.prepHours[0]}-${c.prepHours[1]}h` : "prep n/a";
+      const cost = c.examCostUsd != null ? `$${c.examCostUsd}` : "cost n/a";
+      const extra = c.prereqNote ? ` :: ${c.prereqNote}` : "";
+      return `- ${id} :: ${c.name} :: ${level}${fit} :: ${prep} :: ${cost} :: ${c.marketSignal} :: source: ${c.source}${extra}`;
+    })
+    .join("\n");
 }

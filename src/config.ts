@@ -43,6 +43,30 @@ export const config = {
     baseUrl: opt("GROUNDING_BASE_URL"),
     apiKey: opt("GROUNDING_API_KEY"),
   },
+
+  // Live "research BEFORE generate" — pulls real, cited material about ANY field
+  // (questions asked, real struggles, required licenses/certs, proven courses)
+  // and feeds it to prompts so the coach is career-agnostic, not tech-hardcoded.
+  //   auto   → all free, keyless sources (Reddit + Hacker News + Wikipedia + your
+  //            own Horus RAG when available). The default.
+  //   reddit → Reddit only.
+  //   mock   → deterministic offline bundle (dev/smoke).
+  //   off    → disabled; every tool degrades to its pre-research behavior.
+  research: {
+    mode: opt("RESEARCH_MODE", "auto") as "auto" | "reddit" | "mock" | "off",
+  },
+
+  // Reddit is the workhorse for "real users who had issues", but its anonymous
+  // search.json is increasingly gated (403 from datacenter IPs regardless of
+  // User-Agent). Setting FREE Reddit app credentials (https://www.reddit.com/prefs/apps,
+  // "script" or "web app") switches to the reliable app-only OAuth endpoint.
+  // Still $0 — registration is free. Without creds we fall back to anonymous
+  // (works from many residential IPs) and lean on Wikipedia + Hacker News.
+  reddit: {
+    clientId: opt("REDDIT_CLIENT_ID"),
+    clientSecret: opt("REDDIT_CLIENT_SECRET"),
+    userAgent: opt("REDDIT_USER_AGENT", "interview-coach-mcp/0.2 (career interview research)")!,
+  },
 } as const;
 
 export function requireSupabaseConfig(): { url: string; anonKey: string } {

@@ -10,7 +10,7 @@ import {
   proficiencyNudge,
 } from "../domain/spaced-repetition.js";
 import * as S from "../schemas.js";
-import { err, ok } from "./_util.js";
+import { err, ok, researchMeta, researchSafely } from "./_util.js";
 import type { ToolDeps } from "./interview.js";
 
 /**
@@ -68,6 +68,12 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         /* best-effort */
       }
 
+      const research = await researchSafely(deps.research, {
+        field: ctx.goal?.targetField ?? ctx.targetField ?? args.goal ?? "their field",
+        role: ctx.goal?.targetRole,
+        intents: ["resource", "experience"],
+        max: 4,
+      });
       const { system, user } = studyPlanPrompt({
         weeks,
         hoursPerWeek,
@@ -75,6 +81,7 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         resourceCandidates,
         goal: args.goal,
         ctx,
+        research,
       });
       const res = await horus.infer({
         task: "study.build_plan",
@@ -103,7 +110,12 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         /* best-effort */
       }
 
-      return ok({ plan: res.data, targets: targetSkills, recommendationId, _meta: { model: res.model } });
+      return ok({
+        plan: res.data,
+        targets: targetSkills,
+        recommendationId,
+        _meta: { model: res.model, research: researchMeta(research) },
+      });
     },
   );
 

@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { rankResourcesPrompt } from "../domain/prompts.js";
 import * as S from "../schemas.js";
-import { err, ok } from "./_util.js";
+import { err, ok, researchMeta, researchSafely } from "./_util.js";
 import type { ToolDeps } from "./interview.js";
 
 interface Candidate {
@@ -49,6 +49,23 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
 
       const ctx = await assembleLearnerContext(auth.db, auth.userId, {});
       const skills = args.skills ?? ctx.weakSkills.map((s) => s.name);
+
+      // Community-recommended resources for the field (free research). Kept
+      // separate from the ranked DB rows so id-based progress tracking is intact
+      // — and so a field with an empty learning_resources table still gets help.
+      const research = await researchSafely(deps.research, {
+        field: skills[0] ?? args.goal ?? ctx.goal?.targetField ?? ctx.targetField ?? "their field",
+        role: ctx.goal?.targetRole,
+        intents: ["resource"],
+        max: args.maxResults ?? 6,
+      });
+      const communityResources = research.resources.map((s) => ({
+        title: s.text.length > 90 ? `${s.text.slice(0, 89)}…` : s.text,
+        provider: s.sourceLabel,
+        url: s.sourceUrl,
+        stat: s.stat ?? null,
+        why: "Community-recommended for this field.",
+      }));
 
       let ranked: Array<{ id: string; priority: number; whyRecommended: string }> = [];
       if (candidates.length > 0) {
@@ -97,7 +114,7 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
         /* best-effort */
       }
 
-      return ok({ resources: results, recommendationId });
+      return ok({ resources: results, communityResources, recommendationId, _meta: { research: researchMeta(research) } });
     },
   );
 

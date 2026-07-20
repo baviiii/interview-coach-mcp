@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { GroundingPort } from "../adapters/grounding/index.js";
 import type { ModelProvider } from "../adapters/horus/index.js";
+import type { ResearchPort } from "../adapters/research/index.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { persistSkillSignals, touchPracticePatterns } from "../context/persist.js";
 import { focusSkill, nextDifficulty, shouldOfferHint } from "../domain/adaptive.js";
@@ -10,16 +11,19 @@ import {
   finalEvaluationPrompt,
   generateQuestionsPrompt,
   hintPrompt,
+  realWorldBlock,
 } from "../domain/prompts.js";
 import * as S from "../schemas.js";
 import type { AuthContext } from "../server/auth.js";
-import { clampScore, num, ok } from "./_util.js";
+import { clampScore, num, ok, researchMeta, researchSafely } from "./_util.js";
 
 export interface ToolDeps {
   auth: AuthContext;
   /** The model seam — Horus by default; swap any ModelProvider for turnkey. */
   horus: ModelProvider;
   grounding: GroundingPort;
+  /** Live "research before generate" — real, cited field material (free sources). */
+  research: ResearchPort;
 }
 
 export function registerInterviewTools(server: McpServer, deps: ToolDeps): void {
@@ -42,8 +46,16 @@ export function registerInterviewTools(server: McpServer, deps: ToolDeps): void 
       const jd = src.type === "paste" ? src.jobDescription : undefined;
 
       const ctx = await assembleLearnerContext(auth.db, auth.userId, { jobId, field, seniority });
+      const research = await researchSafely(deps.research, {
+        field,
+        role: ctx.goal?.targetRole,
+        seniority,
+        jobDescription: jd,
+        intents: ["question", "experience", "credential"],
+        max: 4,
+      });
 
-      const system = `You are a former FAANG hiring manager designing a focused interview-prep plan.
+      const system = `You are a seasoned hiring manager for ${field} roles designing a focused interview-prep plan that mirrors how THIS field actually interviews (rounds, formats, what each stage screens for).
 Return ONLY JSON:
 { "targetRole": string, "company": string,
   "rounds": [{ "name": string, "minutes": number, "weight": number, "focusAreas": string[], "whyWeighted": string }],
@@ -55,7 +67,8 @@ SENIORITY: ${seniority ?? "Mid-Level"}
 TIME BUDGET: ${args.timeBudgetMinutes ?? 45} minutes
 REQUESTED ROUNDS: ${(args.rounds ?? []).join(", ") || "you decide"}
 ${jd ? `JOB DESCRIPTION:\n${jd}\n` : ""}${ctx.job ? `TARGET JOB: ${ctx.job.title} @ ${ctx.job.company}\nKNOWN GAPS: ${(ctx.job.gaps ?? []).join(", ") || "n/a"}\n` : ""}WEAK SKILLS: ${ctx.weakSkills.map((s) => `${s.name} (${s.proficiency})`).join(", ") || "unknown"}
-Weight rounds toward the intersection of the role's demands and the candidate's weak skills.`;
+${realWorldBlock(research)}
+Weight rounds toward the intersection of the role's real interview structure (above) and the candidate's weak skills.`;
 
       const res = await horus.infer({
         task: "interview.build_plan",
@@ -85,7 +98,11 @@ Weight rounds toward the intersection of the role's demands and the candidate's 
         /* best-effort persistence */
       }
 
-      return ok({ plan: res.data, recommendationId, _meta: { model: res.model, cached: res.cached } });
+      return ok({
+        plan: res.data,
+        recommendationId,
+        _meta: { model: res.model, cached: res.cached, research: researchMeta(research) },
+      });
     },
   );
 
@@ -104,6 +121,15 @@ Weight rounds toward the intersection of the role's demands and the candidate's 
         field: args.field,
         seniority: args.seniority,
       });
+      // Research what THIS field actually gets asked / struggles with, first.
+      const research = await researchSafely(deps.research, {
+        field: args.field,
+        role: ctx.goal?.targetRole,
+        seniority: args.seniority,
+        jobDescription: args.jobDescription,
+        intents: ["question", "experience"],
+        max: 4,
+      });
       const { system, user } = generateQuestionsPrompt({
         field: args.field,
         seniority: args.seniority,
@@ -111,6 +137,7 @@ Weight rounds toward the intersection of the role's demands and the candidate's 
         focusAreas: args.focusAreas,
         count: args.count,
         ctx,
+        research,
       });
       const res = await horus.infer({
         task: "interview.generate_questions",
@@ -119,7 +146,7 @@ Weight rounds toward the intersection of the role's demands and the candidate's 
         model: "deep",
         userRef: auth.userId,
       });
-      return ok({ ...(res.data as object), _meta: { model: res.model } });
+      return ok({ ...(res.data as object), _meta: { model: res.model, research: researchMeta(research) } });
     },
   );
 
@@ -155,11 +182,22 @@ Weight rounds toward the intersection of the role's demands and the candidate's 
         field: args.field,
         seniority: args.seniority,
       });
+      const research = await researchSafely(deps.research, {
+        field: args.field,
+        role: ctx.goal?.targetRole,
+        seniority: args.seniority,
+        jobDescription: args.jobDescription,
+        intents: ["question", "experience"],
+        max: 4,
+      });
       const { system, user } = generateQuestionsPrompt({
         field: args.field,
         seniority: args.seniority,
+        jobDescription: args.jobDescription,
+        focusAreas: args.focusAreas,
         count: args.questionCount ?? 6,
         ctx,
+        research,
       });
       const res = await horus.infer({
         task: "interview.generate_questions",
@@ -185,7 +223,7 @@ Weight rounds toward the intersection of the role's demands and the candidate's 
         sessionId,
         analysis: data.analysis,
         questions: data.questions,
-        _meta: { model: res.model, persisted: sessionId !== null },
+        _meta: { model: res.model, persisted: sessionId !== null, research: researchMeta(research) },
       });
     },
   );
@@ -283,15 +321,20 @@ Weight rounds toward the intersection of the role's demands and the candidate's 
     },
     async (args) => {
       let scores: number[] = [];
+      let covered: string[] = [];
       try {
         const { data } = await auth.db
           .from("interview_answers")
-          .select("overall_score")
+          .select("overall_score, question_text")
           .eq("session_id", args.sessionId)
           .order("answered_at", { ascending: true });
         scores = (data ?? [])
           .map((r: { overall_score: unknown }) => Number(r.overall_score))
           .filter((n) => Number.isFinite(n));
+        covered = (data ?? [])
+          .map((r: { question_text: unknown }) => String(r.question_text ?? "").trim())
+          .filter(Boolean)
+          .slice(-10);
       } catch {
         /* best-effort */
       }
@@ -308,7 +351,12 @@ Weight rounds toward the intersection of the role's demands and the candidate's 
 The "difficulty" MUST be "${difficulty}".`;
       const user = `FIELD: ${args.field} | SENIORITY: ${args.seniority ?? "Mid-Level"}
 ${skill ? `Probe this weak skill: ${skill}.` : ""}
-Do not repeat themes already covered in this session.`;
+${args.focusAreas?.length ? `THIS ROUND'S FOCUS: ${args.focusAreas.join(", ")}. Stay within it.` : ""}
+${
+  covered.length
+    ? `ALREADY ASKED THIS SESSION (do not repeat these themes):\n${covered.map((q) => `- ${q}`).join("\n")}`
+    : "Do not repeat themes already covered in this session."
+}`;
 
       const res = await horus.infer({
         task: "interview.next_question",
