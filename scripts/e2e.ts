@@ -102,7 +102,7 @@ async function main() {
     const start = await mustPost("/api/interview/start", {
       field: "Software Engineering",
       seniority: "Mid-Level",
-      questionCount: 3,
+      questionCount: 6,
     });
     const questions: unknown[] = Array.isArray(start.questions) ? start.questions : [];
     if (questions.length === 0) fail(`start returned no questions: ${JSON.stringify(start).slice(0, 300)}`);
@@ -111,6 +111,23 @@ async function main() {
       typeof q0 === "string" ? q0 : (q0?.question ?? q0?.text ?? q0?.questionText);
     if (!questionText) fail(`could not extract question text from ${JSON.stringify(q0).slice(0, 300)}`);
     console.log(`✓ start session (${questions.length} questions)`);
+
+    // A full loop is structured, and behavioural coverage is guaranteed by the
+    // blueprint — not left to the model's discretion.
+    const blueprint: any[] = Array.isArray(start.blueprint) ? start.blueprint : [];
+    const plannedBehavioral = blueprint.filter((s) => s?.stage === "behavioral").length;
+    if (plannedBehavioral < 2) {
+      fail(`blueprint planned only ${plannedBehavioral} behavioral slots: ${JSON.stringify(blueprint).slice(0, 300)}`);
+    }
+    const behavioral = questions.filter((q: any) => q?.type === "behavioral" || q?.stage === "behavioral");
+    if (behavioral.length < 2) {
+      fail(`expected ≥2 behavioral questions, got ${behavioral.length}`);
+    }
+    const unstaged = questions.filter((q: any) => !q?.stage || !q?.whyThisQuestion);
+    if (unstaged.length > 0) {
+      fail(`every question needs a stage and whyThisQuestion; ${unstaged.length} missing`);
+    }
+    console.log(`✓ full loop is structured (${plannedBehavioral} behavioral slots, all questions staged)`);
 
     const sessionId = start.sessionId ?? randomUUID();
     const answer = await mustPost("/api/interview/answer", {
@@ -134,6 +151,31 @@ async function main() {
     const tips = await mustPost("/api/proven-tips", { skill: "System Design", count: 2 });
     if (!tips) fail("proven-tips returned nothing");
     console.log("✓ proven tips");
+
+    // The learning side must work for a learner with nothing in the database:
+    // no tracked skills, no resources table, no prior interview.
+    const plan = await mustPost("/api/study/plan", { weeks: 2, hoursPerWeek: 4 });
+    if (!plan.plan || !Array.isArray(plan.targets) || plan.targets.length === 0) {
+      fail(`study plan came back empty for a cold-start learner: ${JSON.stringify(plan).slice(0, 300)}`);
+    }
+    console.log(`✓ study plan on cold start (targets from ${plan.targetSource})`);
+
+    const ranked = await mustPost("/api/resources/rank", { goal: "Senior Backend Engineer", maxResults: 4 });
+    if (!Array.isArray(ranked.resources) || ranked.resources.length === 0) {
+      fail(`resource ranking returned nothing with an empty catalogue: ${JSON.stringify(ranked).slice(0, 300)}`);
+    }
+    console.log(`✓ resources with an empty catalogue (${ranked.resources.length}, unsourced=${ranked.unsourced})`);
+
+    const pathway = await mustPost("/api/learning/pathway", { field: "Software Engineering", weeks: 2 });
+    const p = pathway.pathway;
+    if (!p || !Array.isArray(p.targets) || p.targets.length === 0) {
+      fail(`pathway returned no targets: ${JSON.stringify(pathway).slice(0, 300)}`);
+    }
+    if (!p.plan || !Array.isArray(p.resources) || !p.nextDrill?.skill || !p.nextMock?.field) {
+      fail(`pathway is missing a section: ${JSON.stringify(Object.keys(p))}`);
+    }
+    if (!pathway._meta?.degraded) fail("pathway must report its degraded state");
+    console.log(`✓ learning pathway (${p.targets.length} targets, ${p.resources.length} resources)`);
 
     // The cost guard actually guards: hammer until 429.
     let tripped = false;

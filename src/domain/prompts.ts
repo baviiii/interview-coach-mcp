@@ -6,6 +6,7 @@
 
 import { researchIsEmpty, type FieldResearch, type ResearchKind, type ResearchSnippet } from "../adapters/research/port.js";
 import { getCareerPath, getSeniorityModifier } from "./career-paths.js";
+import { blueprintText, type InterviewBlueprint, type InterviewStage } from "./interview-loop.js";
 import type { LearnerContext } from "../types.js";
 
 function contextBlock(ctx?: LearnerContext): string {
@@ -25,6 +26,65 @@ function contextBlock(ctx?: LearnerContext): string {
   ].filter(Boolean);
   return lines.join("\n");
 }
+
+/**
+ * The interview-grade candidate block. `contextBlock` above is deliberately
+ * thin (it's fine for a drill or a hint), but a mock interview that doesn't
+ * know their history, resume, goal or target job can only ask generic
+ * questions — which is exactly the complaint this block exists to fix. Every
+ * fact here is already assembled in LearnerContext; it was simply never
+ * reaching the interview prompts.
+ */
+function interviewLearnerBlock(ctx?: LearnerContext): string {
+  if (!ctx) return "";
+  const persona = ctx.persona as { headline?: string; growthEdges?: string[]; coachingTone?: string } | null;
+  const skillLines = ctx.skills
+    .slice(0, 10)
+    .map((s) => `  - ${s.name}: ${s.proficiency}/100 (${s.trend})`)
+    .join("\n");
+
+  const lines = [
+    "\nTHE CANDIDATE IN FRONT OF YOU — this is a real person with a real history.",
+    "Use these specifics to choose the scenarios, the vocabulary and the stakes of your questions. Never quote their profile back at them and never say 'based on your profile'.",
+    persona?.headline ? `- Who they are: ${persona.headline}` : "",
+    persona?.growthEdges?.length ? `- Known growth edges: ${persona.growthEdges.join(", ")}` : "",
+    ctx.goal?.targetRole || ctx.goal?.targetField
+      ? `- Stated goal: ${[ctx.goal?.targetRole, ctx.goal?.targetField, ctx.goal?.seniority].filter(Boolean).join(" · ")}`
+      : "",
+    ctx.resumeSummary ? `- Resume (excerpt — mine this for concrete situations to ask about): ${ctx.resumeSummary}` : "",
+    ctx.job ? `- Target job: ${ctx.job.title} @ ${ctx.job.company}${ctx.job.location ? ` (${ctx.job.location})` : ""}` : "",
+    ctx.job?.description ? `- That job's description (excerpt): ${ctx.job.description.slice(0, 800)}` : "",
+    ctx.job?.gaps?.length ? `- Known gaps vs. that job: ${ctx.job.gaps.join(", ")}` : "",
+    skillLines ? `- Tested skill matrix (weakest first):\n${skillLines}` : "- Tested skill matrix: nothing tested yet — calibrate from their resume and goal",
+    (ctx.certifications ?? []).length
+      ? `- Certifications: ${ctx.certifications.map((c) => `${c.name}${c.status !== "active" ? ` [${c.status}]` : ""}`).join("; ")}`
+      : "",
+    ctx.patterns?.weakestQuestionType ? `- Historically struggles most with: ${ctx.patterns.weakestQuestionType} questions` : "",
+    ctx.patterns?.totalSessions ? `- Practice history: ${ctx.patterns.totalSessions} sessions, trend ${ctx.patterns.overallTrend ?? "unknown"}` : "",
+    ctx.recentOverallScores.length ? `- Recent session scores (oldest→newest): ${ctx.recentOverallScores.join(", ")}` : "",
+    ctx.applications
+      ? `- Job pipeline: ${ctx.applications.total} applications, ${ctx.applications.interviews} in interview. Recent targets: ${ctx.applications.recentTitles.join("; ")}`
+      : "",
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+/** Do-not-repeat list built from what this learner has already been asked. */
+function avoidBlock(ctx?: LearnerContext, extra: string[] = []): string {
+  const themes = [...(ctx?.recentQuestionThemes ?? []), ...extra];
+  const unique = [...new Set(themes.map((t) => t.trim()).filter(Boolean))].slice(0, 20);
+  if (unique.length === 0) return "";
+  return `\nALREADY ASKED THIS CANDIDATE (in this or a recent session) — do not repeat these, and do not ask a near-paraphrase of them:\n${unique
+    .map((q) => `  - ${q}`)
+    .join("\n")}\n`;
+}
+
+/** Clichés that make a mock interview feel like a template. */
+const BANNED_QUESTIONS = `Never use these — they are the reason generic mocks feel worthless:
+- "Tell me about yourself" / "Walk me through your resume" as a scored question
+- "What is your greatest weakness/strength", "Where do you see yourself in 5 years"
+- "Why do you want to work here" with no company or JD to ground it
+- Textbook trivia with one memorised answer, or a stock puzzle (FizzBuzz, "design a URL shortener", "reverse a linked list") unless the job description explicitly calls for it`;
 
 /** The full career picture — used by career.* and profile.* prompts. */
 function careerContextBlock(ctx: LearnerContext): string {
@@ -131,47 +191,150 @@ export interface PromptPair {
   user: string;
 }
 
+/**
+ * Question generation, driven by a deterministic blueprint (domain/interview-loop.ts)
+ * rather than by a "~60% technical" hint the model was free to ignore. Every slot
+ * is spelled out — stage, type, difficulty, which of the learner's real skills it
+ * probes — so behavioural coverage is structural, not hopeful.
+ */
 export function generateQuestionsPrompt(args: {
-  field: string;
-  seniority?: string;
+  blueprint: InterviewBlueprint;
   jobDescription?: string;
   focusAreas?: string[];
-  count?: number;
   ctx?: LearnerContext;
   research?: FieldResearch;
 }): PromptPair {
-  const path = getCareerPath(args.field);
-  const mod = getSeniorityModifier(path, args.seniority);
-  const count = args.count ?? 6;
+  const bp = args.blueprint;
+  const path = getCareerPath(bp.field);
+  const mod = getSeniorityModifier(path, bp.seniority);
 
-  const system = `You are a seasoned hiring manager and interview panelist for ${args.field} roles, with 15+ years designing real interview loops in this exact field.
-Principles: open-ended questions, mixed types, progressive difficulty, behavioral questions demand specific examples. Use the language and scenarios that real ${args.field} interviews use — not generic tech-interview tropes unless this IS a tech field.
+  const system = `You are a seasoned hiring manager and interview panelist for ${bp.field} roles, with 15+ years designing real interview loops in this exact field. You are running a live mock interview for one specific candidate.
 
-ROLE FOCUS — ${args.field} (${args.seniority ?? "Mid-Level"}):
+HOW YOU WRITE QUESTIONS:
+- Open-ended, and answerable only by someone who has actually done this work. If the question could be pasted into any interview for any candidate, it is a failed question — rewrite it.
+- Anchor each question in something real: this candidate's own history, the target job, or how ${bp.field} genuinely interviews. Behavioural questions must demand a specific past situation, their actions and a measurable result.
+- Use the language, scenarios and stakes of real ${bp.field} work — not generic tech-interview tropes unless this IS a tech field.
+- Vary phrasing and scenarios; this candidate practises repeatedly and must not recognise the set.
+
+${BANNED_QUESTIONS}
+
+ROLE CALIBRATION — ${bp.field} (${bp.seniority}):
 - Technical depth weight: ${Math.round(mod.technicalDepth * 100)}%
-- Leadership/soft weight: ${Math.round(mod.leadershipFocus * 100)}%
-- Key skills: ${path.keySkills.join(", ")}
-- Type mix: ~${Math.round(path.technicalWeight * 100)}% technical / ${Math.round(path.behavioralWeight * 100)}% behavioral
+- Leadership/soft weight: ${Math.round(mod.leadershipFocus * 100)}%${
+    bp.fieldMatched && bp.keySkills.length ? `\n- Key skills for this field: ${bp.keySkills.join(", ")}` : ""
+  }
 
 Return ONLY JSON:
 {
   "analysis": { "roleUnderstanding": string, "keyCompetencies": string[] },
   "questions": [{
     "id": number, "question": string,
+    "stage": "warmup|behavioral|domain|situational|closing",
     "type": "technical|behavioral|situational|system_design|coding|case_study",
     "difficulty": "easy|medium|hard|expert", "category": string,
-    "skillsTested": string[], "expectedTopics": string[], "timeAllocationMinutes": number
+    "skillsTested": string[], "expectedTopics": string[], "timeAllocationMinutes": number,
+    "whyThisQuestion": "one sentence, addressed to the candidate, on why THEY are being asked this — cite the specific thing about them that prompted it",
+    "followUps": ["two probes you would push with if the answer stays shallow"],
+    "signalsSought": ["what a strong answer proves"]
   }]
 }`;
 
-  const user = `Design ${count} interview questions.
-ROLE: ${args.field}
-SENIORITY: ${args.seniority ?? "Mid-Level"}
-${args.jobDescription ? `JOB DESCRIPTION:\n${args.jobDescription}\n` : ""}${args.focusAreas?.length ? `FOCUS AREAS: ${args.focusAreas.join(", ")}\n` : ""}${contextBlock(args.ctx)}
-${realWorldBlock(args.research)}
-Bias coverage toward the candidate's weakest skills above without telegraphing it. Make questions specific and revealing${hasResearch(args.research) ? ", and anchored in the real-world signals above (mirror how this field actually interviews)" : ""}.`;
+  const user = `Run the loop below. Produce EXACTLY ${bp.slots.length} questions, one per slot, in this order, keeping each slot's id, stage, type and difficulty exactly as specified.
+
+INTERVIEW LOOP (fill each slot):
+${blueprintText(bp)}
+
+ROLE: ${bp.field}
+SENIORITY: ${bp.seniority}
+${args.jobDescription ? `JOB DESCRIPTION:\n${args.jobDescription}\n` : ""}${
+    args.focusAreas?.length ? `THIS ROUND'S FOCUS: ${args.focusAreas.join(", ")} — stay inside it.\n` : ""
+  }${interviewLearnerBlock(args.ctx)}
+${avoidBlock(args.ctx)}${realWorldBlock(args.research)}
+Where a slot names a skill to probe, the question must genuinely test it — bias toward their weakest skills without telegraphing that you are doing so${
+    hasResearch(args.research) ? ", and mirror the real-world signals above (how this field actually interviews)" : ""
+  }.`;
 
   return { system, user };
+}
+
+/** One adaptive follow-on question mid-session. */
+export function nextQuestionPrompt(args: {
+  field: string;
+  seniority?: string;
+  difficulty: string;
+  slot?: { stage: InterviewStage; type: string; intent: string };
+  focusSkill?: string;
+  focusAreas?: string[];
+  lastExchange?: { question: string; answer: string; score?: number };
+  covered: string[];
+  ctx?: LearnerContext;
+  research?: FieldResearch;
+}): PromptPair {
+  const system = `You are the interviewer mid-loop, choosing what to ask next. You have just heard their previous answer, and the question you ask now should feel like it came from a person who was listening — either pressing on what they left thin, or moving deliberately to the next thing you need to see.
+
+${BANNED_QUESTIONS}
+
+Return ONLY JSON for ONE question:
+{ "id": number, "question": string, "stage": "warmup|behavioral|domain|situational|closing",
+  "type": string, "difficulty": string, "category": string,
+  "skillsTested": string[], "expectedTopics": string[],
+  "whyThisQuestion": "one sentence to the candidate on why this follows from what they just said or from where they're weakest",
+  "followUps": ["two probes if the answer stays shallow"] }
+The "difficulty" MUST be "${args.difficulty}".${
+    args.slot ? ` The "stage" MUST be "${args.slot.stage}" and the "type" MUST be "${args.slot.type}".` : ""
+  }`;
+
+  const user = `FIELD: ${args.field} | SENIORITY: ${args.seniority ?? "Mid-Level"}
+${args.slot ? `THIS SLOT SCREENS FOR: ${args.slot.intent}\n` : ""}${args.focusSkill ? `Probe this weak skill: ${args.focusSkill}.\n` : ""}${
+    args.focusAreas?.length ? `THIS ROUND'S FOCUS: ${args.focusAreas.join(", ")}. Stay within it.\n` : ""
+  }${
+    args.lastExchange
+      ? `THEIR PREVIOUS EXCHANGE:\nQ: ${args.lastExchange.question}\nA: ${args.lastExchange.answer.slice(0, 1200)}${
+          args.lastExchange.score != null ? `\n(scored ${args.lastExchange.score}/10)` : ""
+        }\nIf that answer left something important unproven, press there instead of changing subject.\n`
+      : ""
+  }${interviewLearnerBlock(args.ctx)}
+${avoidBlock(args.ctx, args.covered)}${realWorldBlock(args.research, { only: ["question", "experience"] })}`;
+
+  return { system, user };
+}
+
+/**
+ * Rubric weights by question type. A behavioural answer graded on "content 40%"
+ * scores badly for the wrong reason, and a system-design answer graded on STAR
+ * is nonsense — so the weights move with the question while the four reported
+ * dimensions stay stable for the UI.
+ */
+function rubricFor(questionType?: string): { weights: string; emphasis: string; star: boolean } {
+  const t = (questionType ?? "").toLowerCase();
+  if (/behavior|warmup|closing|leadership/.test(t)) {
+    return {
+      weights: "content/substance of the story (25%), communication & structure (25%), behavioral evidence — STAR completeness, ownership, specificity (35%), strategic impact — the measurable result and what they learned (15%)",
+      emphasis:
+        'A story without a specific situation, their OWN actions ("we" everywhere is a red flag) and a concrete outcome cannot score above 5, however fluent it sounds.',
+      star: true,
+    };
+  }
+  if (/technical|coding|system_design|design/.test(t)) {
+    return {
+      weights: "content — correctness and technical depth (45%), communication — how clearly they reason aloud (20%), behavioral — how they handle uncertainty and pushback (10%), strategic — trade-offs, constraints and impact (25%)",
+      emphasis:
+        "Reward naming real trade-offs and failure modes; penalise buzzword recall with no mechanism behind it. A confidently wrong claim is worse than an acknowledged unknown.",
+      star: false,
+    };
+  }
+  if (/situational|case/.test(t)) {
+    return {
+      weights: "content — quality of judgment and the options considered (35%), communication — structure of the reasoning (25%), behavioral — stakeholder awareness (20%), strategic — risk, second-order effects, what they'd do first (20%)",
+      emphasis: "There is no single right answer; score the reasoning, the trade-offs surfaced, and whether they committed to a decision.",
+      star: false,
+    };
+  }
+  return {
+    weights: "content (40%), communication (30%), behavioral (20%), strategic impact (10%)",
+    emphasis: "Be constructive and specific.",
+    star: false,
+  };
 }
 
 export function evaluateAnswerPrompt(args: {
@@ -181,27 +344,45 @@ export function evaluateAnswerPrompt(args: {
   questionType?: string;
   answer: string;
   expectedTopics?: string[];
+  /** Earlier exchanges this session — lets the evaluator spot patterns and
+   *  avoid repeating coaching the candidate already received. */
+  transcript?: Array<{ question: string; answer: string; score?: number }>;
   ctx?: LearnerContext;
 }): PromptPair {
-  const system = `You are an elite interview evaluator. Score content (40%), communication (30%), behavioral/STAR (20%), strategic impact (10%).
-Scale: 9-10 exceptional, 7-8 strong, 5-6 adequate, 3-4 weak, 1-2 poor. Be constructive and specific.
+  const rubric = rubricFor(args.questionType);
+
+  const system = `You are an elite interview evaluator for ${args.field} roles. Score this answer against the weighting for THIS question type: ${rubric.weights}.
+Scale: 9-10 exceptional, 7-8 strong, 5-6 adequate, 3-4 weak, 1-2 poor. ${rubric.emphasis}
+Quote their actual words when you praise or criticise — generic feedback is worthless to them. The rewritten answer must use THEIR material (their real experience as given), not an invented one.
 
 Return ONLY JSON:
 {
   "score": number,
-  "scoreBreakdown": { "content": {"score": number}, "communication": {"score": number}, "behavioral": {"score": number}, "strategic": {"score": number} },
+  "scoreBreakdown": { "content": {"score": number, "note": string}, "communication": {"score": number, "note": string}, "behavioral": {"score": number, "note": string}, "strategic": {"score": number, "note": string} },
+  "rubricApplied": "one line naming the weighting you used and why it fits this question type",${
+    rubric.star
+      ? '\n  "starBreakdown": { "situation": "present|thin|missing", "task": "present|thin|missing", "action": "present|thin|missing", "result": "present|thin|missing", "note": string },'
+      : ""
+  }
   "skillsAssessed": [{ "skill": string, "proficiencyDemonstrated": number, "evidence": string }],
   "validation": { "strengths": string[], "missing": string[], "redFlags": string[] },
   "improvedAnswer": { "rewritten": string, "keyChanges": string[] },
   "coachingTips": [{ "priority": "high|medium|low", "tip": string }],
+  "followUpQuestion": "the question a real interviewer would ask next, given exactly what they just said",
   "suggestedFollowup": string
 }`;
+
+  const earlier = (args.transcript ?? [])
+    .slice(-4)
+    .map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer.slice(0, 600)}${t.score != null ? ` (scored ${t.score})` : ""}`)
+    .join("\n\n");
 
   const user = `Evaluate this answer.
 FIELD: ${args.field} | SENIORITY: ${args.seniority ?? "Mid-Level"}
 QUESTION (${args.questionType ?? "general"}): ${args.question}
 ${args.expectedTopics?.length ? `EXPECTED TOPICS: ${args.expectedTopics.join(", ")}\n` : ""}ANSWER:
-"""${args.answer}"""${contextBlock(args.ctx)}`;
+"""${args.answer}"""
+${earlier ? `\nEARLIER IN THIS SESSION (for pattern-spotting — do not re-coach what they already fixed):\n${earlier}\n` : ""}${contextBlock(args.ctx)}`;
 
   return { system, user };
 }
@@ -210,30 +391,44 @@ export function finalEvaluationPrompt(args: {
   field: string;
   seniority?: string;
   transcript: Array<{ question: string; type?: string; answer: string; score?: number }>;
+  /** Planned vs answered per stage — lets the debrief separate behavioural from
+   *  technical performance instead of averaging them into mush. */
+  coverage?: Array<{ stage: string; planned: number; answered: number }>;
   ctx?: LearnerContext;
+  research?: FieldResearch;
 }): PromptPair {
-  const system = `You are a senior talent-acquisition leader writing an interview debrief. Honest, constructive, actionable.
+  const system = `You are a senior talent-acquisition leader writing an interview debrief for ${args.field}. Honest, constructive, actionable — the candidate will read this and act on it.
 Grades: A+ (95-100) … D/F (<55). Readiness: "Ready" | "Almost Ready" | "Needs Development" | "Not Ready".
+Judge behavioural and domain performance SEPARATELY before you combine them — a candidate who is strong on stories and weak on craft needs to be told exactly that. Ground every claim in something they actually said.
 
 Return ONLY JSON:
 {
   "overallScore": number, "grade": string, "readiness": string,
   "recommendation": "Strong Hire|Hire|Lean Hire|No Hire|Strong No Hire",
   "executiveSummary": string,
+  "stageBreakdown": [{ "stage": string, "score": number, "verdict": string }],
   "strengths": { "top": string[], "notable": string[] },
   "developmentAreas": { "critical": string[], "important": string[] },
   "competencyMatrix": [{ "competency": string, "score": number, "level": string, "developmentNeeded": boolean }],
-  "improvementPlan": { "immediate": [{ "area": string, "action": string, "timeline": string }] }
+  "improvementPlan": { "immediate": [{ "area": string, "action": string, "timeline": string }] },
+  "nextSessionFocus": { "skills": ["2-3 skills the next mock should hammer"], "questionTypes": ["the question types they most need reps on"], "why": string }
 }`;
 
   const qa = args.transcript
     .map((t, i) => `Q${i + 1} [${t.type ?? "general"}]: ${t.question}\nA${i + 1}: ${t.answer}${t.score != null ? `\n(score ${t.score})` : ""}`)
     .join("\n\n");
 
+  const coverage = (args.coverage ?? [])
+    .map((c) => `- ${c.stage}: ${c.answered}/${c.planned} answered`)
+    .join("\n");
+
   const user = `Final evaluation.
 ROLE: ${args.field} | SENIORITY: ${args.seniority ?? "Mid-Level"}
+${coverage ? `LOOP COVERAGE (unanswered stages mean untested competencies — say so rather than assuming):\n${coverage}\n` : ""}
 TRANSCRIPT:
-${qa}${contextBlock(args.ctx)}`;
+${qa}${interviewLearnerBlock(args.ctx)}
+${realWorldBlock(args.research, { only: ["experience", "question"] })}
+"nextSessionFocus" feeds their study plan directly — make it specific enough to act on tomorrow.`;
 
   return { system, user };
 }
@@ -258,6 +453,33 @@ Return ONLY JSON:
 TARGET SKILLS: ${args.skills.join(", ") || "(general)"}
 CANDIDATE RESOURCES:
 ${list}${contextBlock(args.ctx)}`;
+
+  return { system, user };
+}
+
+/**
+ * Last-resort resource guidance: the resources table is empty for this
+ * deployment AND research came back with nothing. Returning an empty list here
+ * is what made the pathway look broken, so we ask for learning *moves* instead
+ * — clearly flagged as unsourced, never dressed up as a vetted catalogue.
+ */
+export function suggestResourcesPrompt(args: {
+  field: string;
+  skills: string[];
+  goal?: string;
+  count: number;
+  ctx?: LearnerContext;
+}): PromptPair {
+  const system = `You are a learning strategist. No vetted resource catalogue is available for this learner, so recommend ${args.count} concrete LEARNING MOVES they can start this week — the kind of thing a practitioner in this field would actually name (a specific type of practice, a canonical text or standard, a project to build, a person to shadow).
+Do NOT invent URLs, course codes, prices or ratings. Name the thing and how to find it.
+
+Return ONLY JSON:
+{ "resources": [{ "title": string, "type": "practice|reading|project|course|community", "whyRecommended": string, "priority": number, "howToFind": string }] }`;
+
+  const user = `FIELD: ${args.field}
+TARGET SKILLS: ${args.skills.join(", ") || "(general readiness)"}
+GOAL: ${args.goal ?? "close the gaps before upcoming interviews"}${contextBlock(args.ctx)}
+Order by priority (1 = start here). Each must be specific enough to act on today.`;
 
   return { system, user };
 }

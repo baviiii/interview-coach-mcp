@@ -26,23 +26,34 @@ export async function assembleLearnerContext(
   // runnable and the UI can drive it end-to-end without credentials.
   if (process.env.AUTH_MODE === "dev") return demoContext(userId, opts);
 
-  const [profileRes, skills, patternsRes, scoresRes, certs, goal, resumeSummary, applications, milestonesRes] =
-    await Promise.all([
-      db.from("profiles").select("ai_persona").eq("id", userId).maybeSingle(),
-      readSkills(db, userId),
-      db.from("user_patterns").select("*").eq("user_id", userId).maybeSingle(),
-      db
-        .from("score_history")
-        .select("overall_score, recorded_at")
-        .eq("user_id", userId)
-        .order("recorded_at", { ascending: false })
-        .limit(10),
-      readCertifications(db, userId),
-      readGoal(db, userId),
-      readResumeSummary(db, userId),
-      readApplications(db, userId),
-      db.from("user_milestones").select("id", { count: "exact", head: true }).eq("user_id", userId),
-    ]);
+  const [
+    profileRes,
+    skills,
+    patternsRes,
+    scoresRes,
+    certs,
+    goal,
+    resumeSummary,
+    applications,
+    milestonesRes,
+    recentQuestionThemes,
+  ] = await Promise.all([
+    db.from("profiles").select("ai_persona").eq("id", userId).maybeSingle(),
+    readSkills(db, userId),
+    db.from("user_patterns").select("*").eq("user_id", userId).maybeSingle(),
+    db
+      .from("score_history")
+      .select("overall_score, recorded_at")
+      .eq("user_id", userId)
+      .order("recorded_at", { ascending: false })
+      .limit(10),
+    readCertifications(db, userId),
+    readGoal(db, userId),
+    readResumeSummary(db, userId),
+    readApplications(db, userId),
+    db.from("user_milestones").select("id", { count: "exact", head: true }).eq("user_id", userId),
+    readRecentQuestions(db, userId),
+  ]);
 
   const weakSkills = skills.filter((s) => s.proficiency < 60).slice(0, 5);
   const strongSkills = [...skills].filter((s) => s.proficiency >= 75).slice(0, 5);
@@ -76,6 +87,7 @@ export async function assembleLearnerContext(
     resumeSummary,
     applications,
     milestonesAchieved: milestonesRes.count ?? 0,
+    recentQuestionThemes,
     patterns,
     job: null,
   };
@@ -288,6 +300,59 @@ async function readApplications(db: SupabaseClient, userId: string): Promise<App
   }
 }
 
+/**
+ * What this learner has already been asked, across their recent sessions —
+ * both answered questions and questions that were merely generated. Without
+ * this, every new session is free to re-ask the same things, which is the main
+ * reason mocks stop feeling like practice.
+ */
+async function readRecentQuestions(db: SupabaseClient, userId: string): Promise<string[]> {
+  const themes: string[] = [];
+  try {
+    const { data } = await db
+      .from("interview_answers")
+      .select("question_text, answered_at")
+      .eq("user_id", userId)
+      .order("answered_at", { ascending: false })
+      .limit(30);
+    for (const row of data ?? []) {
+      if (typeof (row as any).question_text === "string") themes.push((row as any).question_text);
+    }
+  } catch {
+    /* best-effort */
+  }
+  try {
+    const { data } = await db
+      .from("interview_sessions")
+      .select("questions, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(3);
+    for (const row of data ?? []) {
+      const qs = (row as any).questions;
+      if (!Array.isArray(qs)) continue;
+      for (const q of qs) {
+        const text = typeof q === "string" ? q : (q as any)?.question;
+        if (typeof text === "string") themes.push(text);
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const t of themes) {
+    const trimmed = t.replace(/\s+/g, " ").trim();
+    const key = trimmed.toLowerCase();
+    if (!trimmed || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(trimmed.length > 160 ? `${trimmed.slice(0, 159)}…` : trimmed);
+    if (unique.length >= 25) break;
+  }
+  return unique;
+}
+
 function toStringArray(v: unknown): string[] | undefined {
   if (!Array.isArray(v)) return undefined;
   return v
@@ -344,6 +409,10 @@ function demoContext(userId: string, opts: { field?: string; seniority?: string 
       "Mid-level backend engineer, 4 years experience. Node.js/TypeScript services on AWS (ECS, Lambda, RDS). Led migration of a monolith to services at a fintech; on-call rotation; mentored two juniors.",
     applications: { total: 14, active: 5, interviews: 2, offers: 0, recentTitles: ["Senior Backend Engineer", "Platform Engineer"] },
     milestonesAchieved: 4,
+    recentQuestionThemes: [
+      "Walk me through the monolith-to-services migration you led — what broke first?",
+      "Tell me about a time you disagreed with your tech lead.",
+    ],
     patterns: {
       overallTrend: "improving",
       strongestQuestionType: "behavioral",

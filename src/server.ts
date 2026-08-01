@@ -103,6 +103,7 @@ app.post("/api/interview/finish", rest("finish_interview"));
 app.post("/api/proven-tips", rest("get_proven_tips"));
 app.post("/api/resources", rest("find_proven_resources"));
 app.post("/api/resources/rank", rest("rank_learning_resources"));
+app.post("/api/learning/pathway", rest("get_learning_pathway"));
 app.post("/api/recommendations/explain", rest("explain_recommendation"));
 app.post("/api/analytics/patterns", rest("analyze_patterns"));
 app.post("/api/analytics/weekly", rest("weekly_insight"));

@@ -75,32 +75,99 @@ function mockFor(task: string): unknown {
         predictedHardestRound: "Technical",
       };
 
+    // Shaped like real blueprint output (warmup → domain → behavioral ×2 →
+    // situational → closing) so offline mode exercises the same contract the UI
+    // renders — including the behavioural coverage a full loop guarantees.
     case "interview.generate_questions":
       return {
         analysis: {
-          roleUnderstanding: "(mock) Role requires solid fundamentals.",
-          keyCompetencies: ["Problem Solving", "System Design", "Communication"],
+          roleUnderstanding: "(mock) Role rewards depth over breadth, and evidence over assertion.",
+          keyCompetencies: ["Problem Solving", "Judgment under constraint", "Communication"],
         },
         questions: [
           {
             id: 1,
-            question: "Walk me through designing a URL shortener.",
-            type: "system_design",
-            difficulty: "medium",
-            category: "System Design",
-            skillsTested: ["System Design", "API Design"],
-            expectedTopics: ["hashing", "storage", "scaling"],
-            timeAllocationMinutes: 8,
+            question: "(mock) Your background points at one project you clearly owned end to end — take me into the messiest week of it.",
+            stage: "warmup",
+            type: "behavioral",
+            difficulty: "easy",
+            category: "Background",
+            skillsTested: ["Communication"],
+            expectedTopics: ["ownership", "context", "constraints"],
+            timeAllocationMinutes: 5,
+            whyThisQuestion: "(mock) Opens on your own history rather than a template question.",
+            followUps: ["(mock) What did you personally decide?", "(mock) What would you do differently now?"],
+            signalsSought: ["Concrete ownership", "Clear framing under pressure"],
           },
           {
             id: 2,
-            question: "Tell me about a time you handled a production incident.",
+            question: "(mock) Walk me through how you'd diagnose the failure mode you hit most often in this work — start from the first signal you'd look at.",
+            stage: "domain",
+            type: "technical",
+            difficulty: "medium",
+            category: "Craft",
+            skillsTested: ["Problem Solving"],
+            expectedTopics: ["diagnosis", "trade-offs", "verification"],
+            timeAllocationMinutes: 8,
+            whyThisQuestion: "(mock) Probes the weakest skill in your tested matrix.",
+            followUps: ["(mock) What would falsify your first hypothesis?", "(mock) What does this cost at 10x volume?"],
+            signalsSought: ["Mechanism, not vocabulary"],
+          },
+          {
+            id: 3,
+            question: "(mock) Tell me about a time your judgment call turned out to be wrong and someone else absorbed the cost.",
+            stage: "behavioral",
             type: "behavioral",
             difficulty: "medium",
-            category: "Communication",
-            skillsTested: ["Communication", "Problem Solving"],
-            expectedTopics: ["ownership", "root cause", "result"],
+            category: "Accountability",
+            skillsTested: ["Communication", "Adaptability"],
+            expectedTopics: ["situation", "own actions", "measurable result"],
             timeAllocationMinutes: 6,
+            whyThisQuestion: "(mock) Behavioural questions are your weakest recorded type.",
+            followUps: ["(mock) What did you tell them at the time?", "(mock) What changed in how you work?"],
+            signalsSought: ["Ownership without deflection", "A real, quantified consequence"],
+          },
+          {
+            id: 4,
+            question: "(mock) Describe a time you pushed back on someone more senior with better information than they had.",
+            stage: "behavioral",
+            type: "behavioral",
+            difficulty: "medium",
+            category: "Influence",
+            skillsTested: ["Leadership", "Communication"],
+            expectedTopics: ["stakes", "how they persuaded", "outcome"],
+            timeAllocationMinutes: 6,
+            whyThisQuestion: "(mock) Your target seniority is judged on influence, not just output.",
+            followUps: ["(mock) What did you concede?", "(mock) How did the relationship hold up after?"],
+            signalsSought: ["Evidence-led disagreement", "Result"],
+          },
+          {
+            id: 5,
+            question: "(mock) You're a week from a committed deadline and discover the approach won't hold. What do you do first, and who hears about it?",
+            stage: "situational",
+            type: "situational",
+            difficulty: "hard",
+            category: "Judgment",
+            skillsTested: ["Problem Solving", "Communication"],
+            expectedTopics: ["triage", "escalation", "trade-offs"],
+            timeAllocationMinutes: 7,
+            whyThisQuestion: "(mock) Tests the judgment the role is actually hired for.",
+            followUps: ["(mock) What do you cut?", "(mock) What if leadership says ship anyway?"],
+            signalsSought: ["Commits to a decision", "Surfaces second-order effects"],
+          },
+          {
+            id: 6,
+            question: "(mock) What would you need to see in your first 90 days to know this was the right move?",
+            stage: "closing",
+            type: "behavioral",
+            difficulty: "easy",
+            category: "Role fit",
+            skillsTested: ["Communication"],
+            expectedTopics: ["motivation", "ramp plan", "self-direction"],
+            timeAllocationMinutes: 4,
+            whyThisQuestion: "(mock) Closes on fit against your stated goal.",
+            followUps: ["(mock) What would worry you?", "(mock) What do you want to own by month six?"],
+            signalsSought: ["Specific, informed expectations"],
           },
         ],
       };
@@ -133,18 +200,23 @@ function mockFor(task: string): unknown {
         coachingTips: [
           { priority: "high", tip: "Always close with a measurable result." },
         ],
+        rubricApplied: "(mock) Technical weighting: correctness 45%, communication 20%, composure 10%, trade-offs 25%.",
+        followUpQuestion: "(mock) You said it scaled — what was the first thing that fell over when it didn't?",
         suggestedFollowup: "How would your design change at 10x write volume?",
       };
 
     case "interview.next_question":
       return {
         id: 99,
-        question: "(mock) Given your last answer, how would you handle retries idempotently?",
-        type: "system_design",
+        question: "(mock) You said the fix held — what was the first thing that told you it had, and how long did you wait before believing it?",
+        stage: "domain",
+        type: "technical",
         difficulty: "hard",
-        category: "System Design",
-        skillsTested: ["System Design"],
-        expectedTopics: ["idempotency", "dedup keys"],
+        category: "Verification",
+        skillsTested: ["Problem Solving"],
+        expectedTopics: ["verification", "false positives", "monitoring"],
+        whyThisQuestion: "(mock) Follows directly from what you left unproven in the last answer.",
+        followUps: ["(mock) What would have told you it hadn't?", "(mock) Who else needed to know?"],
       };
 
     case "interview.final_evaluation":
@@ -155,6 +227,11 @@ function mockFor(task: string): unknown {
         recommendation: "Lean Hire",
         executiveSummary:
           "(mock) Solid fundamentals; tighten quantification and system-design depth.",
+        stageBreakdown: [
+          { stage: "behavioral", score: 78, verdict: "(mock) Stories land, results stay vague." },
+          { stage: "domain", score: 62, verdict: "(mock) Reasoning is sound until the trade-off question." },
+          { stage: "situational", score: 70, verdict: "(mock) Commits to a decision, thin on second-order effects." },
+        ],
         strengths: { top: ["Communication"], notable: ["Ownership"] },
         developmentAreas: { critical: ["System Design depth"], important: ["Quantifying impact"] },
         competencyMatrix: [
@@ -169,6 +246,32 @@ function mockFor(task: string): unknown {
             },
           ],
         },
+        nextSessionFocus: {
+          skills: ["System Design", "Quantifying impact"],
+          questionTypes: ["system_design", "behavioral"],
+          why: "(mock) Both stages lost points for the same reason: claims without numbers behind them.",
+        },
+      };
+
+    case "study.suggest_resources":
+      // The "nothing in the catalogue, nothing researched" path — moves, not links.
+      return {
+        resources: [
+          {
+            title: "(mock) Timed retrieval practice on your weakest skill, 20 minutes daily",
+            type: "practice",
+            whyRecommended: "(mock) Retrieval beats re-reading, and it generates the signal your matrix is missing.",
+            priority: 1,
+            howToFind: "(mock) Use next_drill — it schedules the skill that's due.",
+          },
+          {
+            title: "(mock) The standard reference practitioners in this field cite",
+            type: "reading",
+            whyRecommended: "(mock) Shared vocabulary is what interviewers listen for.",
+            priority: 2,
+            howToFind: "(mock) Ask two people doing the job what they'd hand a new starter.",
+          },
+        ],
       };
 
     case "study.rank_resources":

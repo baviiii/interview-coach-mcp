@@ -1,11 +1,18 @@
 /** Proves the generation pipeline runs: prompt builder → Horus port → parsed
  *  structured JSON. Uses the mock Horus, no DB/auth needed. */
 import { MockHorusClient } from "../src/adapters/horus/mock-client.js";
+import { interviewBlueprint } from "../src/domain/interview-loop.js";
 import { evaluateAnswerPrompt, generateQuestionsPrompt } from "../src/domain/prompts.js";
 
 const horus = new MockHorusClient();
 
-const gq = generateQuestionsPrompt({ field: "Software Engineering", seniority: "Senior", count: 4 });
+const blueprint = interviewBlueprint({ field: "Software Engineering", seniority: "Senior", questionCount: 4 });
+console.log(
+  "blueprint →",
+  blueprint.slots.map((s) => `${s.index}:${s.stage}/${s.type}/${s.difficulty}`).join("  "),
+);
+
+const gq = generateQuestionsPrompt({ blueprint });
 const q = await horus.infer<{ questions: unknown[] }>({
   task: "interview.generate_questions",
   system: gq.system,

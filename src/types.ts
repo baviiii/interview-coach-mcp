@@ -73,6 +73,9 @@ export interface LearnerContext {
   /** Job-search pipeline signal (job_applications). */
   applications?: ApplicationsSnapshot | null;
   milestonesAchieved?: number;
+  /** Questions this learner has already been asked in recent sessions — fed to
+   *  generation as a do-not-repeat list so every session isn't the same one. */
+  recentQuestionThemes?: string[];
   patterns?: {
     overallTrend?: string;
     strongestQuestionType?: string;

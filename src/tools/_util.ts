@@ -30,6 +30,21 @@ export function researchMeta(r: FieldResearch): { sources: string[]; partial: bo
   return { sources: researchSources(r), partial: r.partial };
 }
 
+/**
+ * Why a result is thinner than it should be. Empty output and broken output
+ * look identical from the UI ("the learning pathway doesn't work"), so every
+ * pathway tool reports what degraded instead of silently returning nothing.
+ */
+export interface Degradation {
+  degraded: boolean;
+  reasons: string[];
+}
+
+export function degradation(reasons: Array<string | false | null | undefined>): Degradation {
+  const kept = reasons.filter((r): r is string => typeof r === "string" && r.length > 0);
+  return { degraded: kept.length > 0, reasons: kept };
+}
+
 export function err(message: string): CallToolResult {
   return { isError: true, content: [{ type: "text", text: message }] };
 }

@@ -417,11 +417,18 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: S.buildRoadmapInput,
     },
     async (args) => {
-      if (!args.targetRole?.trim()) return err("targetRole is required.");
       const ctx = await assembleLearnerContext(auth.db, auth.userId, { field: args.targetField });
+      // A learner who already told us their goal shouldn't have to repeat it —
+      // requiring targetRole here made the roadmap look broken from the UI.
+      const targetRole = args.targetRole?.trim() || ctx.goal?.targetRole || ctx.job?.title;
+      if (!targetRole) {
+        return err(
+          "No target role to build a roadmap toward — pass `targetRole` or set a career goal first (set_career_goal).",
+        );
+      }
       const research = await researchSafely(deps.research, {
-        field: args.targetField ?? ctx.goal?.targetField ?? ctx.targetField ?? args.targetRole,
-        role: args.targetRole,
+        field: args.targetField ?? ctx.goal?.targetField ?? ctx.targetField ?? targetRole,
+        role: targetRole,
         intents: ["credential", "experience", "fact"],
         max: 4,
       });
@@ -434,7 +441,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
       ].join("\n");
 
       const { system, user } = careerRoadmapPrompt({
-        targetRole: args.targetRole,
+        targetRole,
         ctx,
         skeleton: skeletonText,
         certShortlist: credentialLines(ctx, research, { field: args.targetField, max: 3 }),
@@ -456,7 +463,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           .insert({
             user_id: auth.userId,
             recommendation_type: "roadmap",
-            title: `Roadmap: ${args.targetRole} (${skeleton.horizonWeeks}w)`,
+            title: `Roadmap: ${targetRole} (${skeleton.horizonWeeks}w)`,
             description: `${skeleton.hoursPerWeek} h/week · ${skeleton.intensity}`,
             ai_reasoning: JSON.stringify(res.data).slice(0, 8000),
             status: "active",

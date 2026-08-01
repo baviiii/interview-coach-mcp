@@ -58,17 +58,62 @@ Your app or MCP client
 
 ## What can it do?
 
-Roughly **26 tools** across five areas. Run `npm run smoke` to list them all.
+Roughly **27 tools** across six areas. Run `npm run smoke` to list them all.
 
 | Area | What you get |
 |------|----------------|
-| **Interview** | Prep plan, questions, full mock session, hints, adaptive next question, final evaluation |
+| **Interview** | Prep plan, questions, full **structured** mock session, hints, adaptive next question, final evaluation |
 | **Career** | Guidance, roadmaps, cert analysis/recommendations, log certs, set goal, refresh persona |
 | **Study** | Study plans, spaced-repetition drills, concept explanations, resource progress |
+| **Learning** | One-call learning pathway, ranked resources, recommendation explanations |
 | **Proof** | Tips/resources with optional source links — or `unverified` |
 | **Analytics** | Patterns and weekly insights from session history |
 
 Plus **5 MCP resources** (e.g. `careercraft://learner/context`) for agents to read without a tool call.
+
+---
+
+## The mock interview is a loop, not a question list
+
+A "full interview" is built from a **deterministic blueprint** (`domain/interview-loop.ts`) before the
+model is ever called — the same division of labour as the roadmap skeleton. We decide the shape:
+
+```
+warmup → domain → behavioral → behavioral → situational → closing
+```
+
+Each slot fixes its stage, question type, difficulty (ramped to seniority) and which of the learner's
+real skills it probes; the model only writes the content. That is what makes the guarantees hold:
+
+- **Behavioral questions are structural.** A loop of 4+ questions always carries at least two, whatever
+  the field's technical bias. Telling a model "~40% behavioral" in prose did not survive contact with reality.
+- **Questions are personal.** Generation sees the learner's resume, persona, stated goal, target job and
+  JD, application pipeline and full skill matrix — not just a list of weak skills — and each question comes
+  back with a `whyThisQuestion` you can show the candidate, plus the `followUps` the interviewer would push with.
+- **Sessions don't repeat.** `recentQuestionThemes` (their last ~3 sessions) is fed in as a do-not-repeat list,
+  and a cliché ban list rules out "tell me about yourself", "greatest weakness" and stock puzzles.
+- **Evaluation matches the question.** Rubric weights move with question type — behavioral answers are scored
+  on STAR completeness and ownership (with a `starBreakdown`), technical ones on correctness and trade-offs.
+- **The debrief scores stages separately** and emits `nextSessionFocus`, which the learning pathway reads back.
+
+---
+
+## Learning pathway (one call for the whole learning side)
+
+`get_learning_pathway` / `POST /api/learning/pathway` returns what to work on, a week-by-week plan, ranked
+resources, the drill that's due and what the next mock should target — persisted as one resumable
+recommendation.
+
+It is built to work on an **empty database**. Every piece degrades instead of failing:
+
+| Situation | Old behaviour | Now |
+|-----------|---------------|-----|
+| `learning_resources` table empty | `resources: []` — page looks broken | Ranks community-researched resources instead; if those are empty too, returns model-suggested learning *moves* flagged `unsourced` |
+| No tracked skills (new user) | Hard error, "No skills to plan around" | Targets derived from last debrief → skill matrix → career goal → field → research, with `targetSource` saying which |
+| No `targetRole` on a roadmap | Hard error | Falls back to the learner's stated goal or target job |
+
+Every learning response carries `_meta.degraded = { degraded, reasons[] }` so "nothing showed up" is always
+explainable from the response itself.
 
 ---
 
@@ -86,7 +131,7 @@ The thing that makes this work for **any** field. Before a tool generates, it as
 
 **All free, no API key.** Modes (`RESEARCH_MODE`): `auto` (default — Reddit + HN + Wikipedia + your RAG), `reddit`, `mock` (offline), `off` (degrade to pre-research behavior).
 
-Tools wired to research: `generate_contextual_questions`, `start_interview_session`, `build_interview_plan`, `get_proven_tips`, `find_proven_resources`, `rank_learning_resources`, `recommend_certifications`, `analyze_certifications`, `career_guidance`, `build_career_roadmap`, `build_study_plan`. Each surfaces its real sources in `_meta.research`.
+Tools wired to research: `generate_contextual_questions`, `start_interview_session`, `next_question`, `finish_interview`, `build_interview_plan`, `get_proven_tips`, `find_proven_resources`, `rank_learning_resources`, `get_learning_pathway`, `recommend_certifications`, `analyze_certifications`, `career_guidance`, `build_career_roadmap`, `build_study_plan`. Each surfaces its real sources in `_meta.research`.
 
 **The Reddit caveat (important):** Reddit's anonymous `search.json` is now commonly **403-blocked from datacenter IPs** (any User-Agent). Wikipedia + Hacker News work everywhere with zero config. To make Reddit reliable, add **free** app credentials (no cost — just register at `reddit.com/prefs/apps`):
 
@@ -113,7 +158,9 @@ Not everything comes from the web or the DB. Here's the split:
 | `domain/certifications.ts` | **~25 certs** (AWS, Azure, K8s, PMP, …) — now a **fast-path/fallback, no longer the ceiling**. Cert tools merge this with credentials *researched* for the field (each with a source), and the tech catalog is **not** dumped on non-tech fields. |
 | `domain/taxonomy.ts` | Skill names and question types used in prompts |
 | `domain/roadmap.ts` | Phase structure for roadmaps (Assess → Sharpen → Prove, etc.) |
-| `domain/prompts.ts` | Prompt templates (some still say "FAANG hiring manager" — tech-flavored) |
+| `domain/interview-loop.ts` | Mock-interview stage structure (warmup → domain → behavioral → situational → closing) and the behavioural floor |
+| `domain/targets.ts` | Cold-start fallback chain for skill targets (debrief → matrix → goal → field → research) |
+| `domain/prompts.ts` | Prompt templates, the cliché ban list, and the per-question-type evaluation rubrics |
 
 ### Dynamic (changes per user / input)
 
@@ -331,6 +378,7 @@ src/
 | `POST /api/study/drill/result` | `record_drill_result` |
 | `POST /api/study/explain` | `explain_concept` |
 | `POST /api/study/resource/progress` | `track_resource_progress` |
+| `POST /api/learning/pathway` | `get_learning_pathway` |
 | `POST /api/proven-tips` | `get_proven_tips` |
 | `POST /api/resources` | `find_proven_resources` |
 | `POST /api/resources/rank` | `rank_learning_resources` |

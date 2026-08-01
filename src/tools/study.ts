@@ -9,8 +9,9 @@ import {
   pickDrillSkill,
   proficiencyNudge,
 } from "../domain/spaced-repetition.js";
+import { deriveSkillTargets } from "../domain/targets.js";
 import * as S from "../schemas.js";
-import { err, ok, researchMeta, researchSafely } from "./_util.js";
+import { degradation, err, ok, researchMeta, researchSafely } from "./_util.js";
 import type { ToolDeps } from "./interview.js";
 
 /**
@@ -35,18 +36,6 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
       const weeks = args.weeks ?? 4;
       const hoursPerWeek = args.hoursPerWeek ?? 5;
 
-      const targetSkills = (args.skills?.length
-        ? args.skills.map((name) => {
-            const known = ctx.skills.find((s) => s.name.toLowerCase() === name.toLowerCase());
-            return { skill: name, from: known?.proficiency ?? 0 };
-          })
-        : ctx.weakSkills.slice(0, 4).map((s) => ({ skill: s.name, from: s.proficiency }))
-      ).map((t) => ({ ...t, to: Math.min(85, Math.max(t.from + 20, 50)) }));
-
-      if (targetSkills.length === 0) {
-        return err("No skills to plan around — pass `skills` or complete an interview session first.");
-      }
-
       // Real resource candidates (best-effort) so the plan cites things that exist.
       let resourceCandidates = "";
       try {
@@ -68,12 +57,25 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         /* best-effort */
       }
 
+      const field = ctx.goal?.targetField ?? ctx.targetField ?? args.goal ?? "their field";
       const research = await researchSafely(deps.research, {
-        field: ctx.goal?.targetField ?? ctx.targetField ?? args.goal ?? "their field",
+        field,
         role: ctx.goal?.targetRole,
         intents: ["resource", "experience"],
         max: 4,
       });
+
+      // Cold start: a learner who hasn't finished an interview has no skill
+      // matrix, and hard-erroring here is what made the study plan look broken
+      // for every new user. Fall back through goal → field → research instead.
+      const derived = deriveSkillTargets({ ctx, skills: args.skills, field, research });
+      const targetSkills = derived.targets;
+      if (targetSkills.length === 0) {
+        return err(
+          "Nothing to plan around yet: no tracked skills, no career goal and no `skills` passed. Set a career goal (set_career_goal), pass `skills`, or complete a mock interview.",
+        );
+      }
+
       const { system, user } = studyPlanPrompt({
         weeks,
         hoursPerWeek,
@@ -113,8 +115,13 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
       return ok({
         plan: res.data,
         targets: targetSkills,
+        targetSource: derived.source,
         recommendationId,
-        _meta: { model: res.model, research: researchMeta(research) },
+        _meta: {
+          model: res.model,
+          research: researchMeta(research),
+          degraded: degradation([derived.note, !resourceCandidates && "no rows in learning_resources — plan cites methods, not catalogue items"]),
+        },
       });
     },
   );
@@ -132,6 +139,7 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
       const ctx = await assembleLearnerContext(auth.db, auth.userId, { field: args.field });
 
       let pick = null;
+      let coldStartNote: string | undefined;
       if (args.skill) {
         const known = ctx.skills.find((s) => s.name.toLowerCase() === args.skill!.toLowerCase());
         const skill = known ?? { name: args.skill, proficiency: 30, trend: "stable" as const };
@@ -140,7 +148,21 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         pick = pickDrillSkill(ctx.skills);
       }
       if (!pick) {
-        return err("No skills tracked yet — run an interview session, log a certification, or pass `skill` explicitly.");
+        // Nothing tracked yet — drill the field's fundamentals rather than
+        // refusing. The result writes back, so the matrix exists after this.
+        const derived = deriveSkillTargets({ ctx, field: args.field });
+        const first = derived.targets[0];
+        if (!first) {
+          return err(
+            "No skills tracked yet and no field to infer from — pass `skill` or `field`, set a career goal, or run a mock interview first.",
+          );
+        }
+        coldStartNote = derived.note;
+        pick = {
+          skill: { name: first.skill, proficiency: first.from, trend: "stable" as const },
+          urgency: 0,
+          whyNow: "nothing tested yet — starting with a core skill for your field",
+        };
       }
 
       const difficulty = drillDifficulty(pick.skill.proficiency);
@@ -162,7 +184,7 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
           whyNow: pick.whyNow,
           nextReviewInDays: nextReviewInDays(pick.skill.proficiency),
         },
-        _meta: { model: res.model },
+        _meta: { model: res.model, degraded: degradation([coldStartNote]) },
       });
     },
   );

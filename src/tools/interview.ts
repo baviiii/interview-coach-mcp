@@ -6,11 +6,13 @@ import type { ResearchPort } from "../adapters/research/index.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { persistSkillSignals, touchPracticePatterns } from "../context/persist.js";
 import { focusSkill, nextDifficulty, shouldOfferHint } from "../domain/adaptive.js";
+import { interviewBlueprint, stageCoverage, type QuestionSlot } from "../domain/interview-loop.js";
 import {
   evaluateAnswerPrompt,
   finalEvaluationPrompt,
   generateQuestionsPrompt,
   hintPrompt,
+  nextQuestionPrompt,
   realWorldBlock,
 } from "../domain/prompts.js";
 import * as S from "../schemas.js";
@@ -40,12 +42,13 @@ export function registerInterviewTools(server: McpServer, deps: ToolDeps): void 
     },
     async (args) => {
       const src = args.source;
-      const field = src.field ?? "Software Engineering";
       const seniority = src.seniority;
       const jobId = src.type === "saved_job" ? src.jobId : undefined;
       const jd = src.type === "paste" ? src.jobDescription : undefined;
 
-      const ctx = await assembleLearnerContext(auth.db, auth.userId, { jobId, field, seniority });
+      const ctx = await assembleLearnerContext(auth.db, auth.userId, { jobId, field: src.field, seniority });
+      // Never assume software: fall back to what the learner actually told us.
+      const field = src.field ?? ctx.goal?.targetField ?? ctx.job?.title ?? "Software Engineering";
       const research = await researchSafely(deps.research, {
         field,
         role: ctx.goal?.targetRole,
@@ -130,12 +133,17 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         intents: ["question", "experience"],
         max: 4,
       });
-      const { system, user } = generateQuestionsPrompt({
+      const blueprint = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
+        questionCount: args.count,
+        focusAreas: args.focusAreas,
+        ctx,
+      });
+      const { system, user } = generateQuestionsPrompt({
+        blueprint,
         jobDescription: args.jobDescription,
         focusAreas: args.focusAreas,
-        count: args.count,
         ctx,
         research,
       });
@@ -144,9 +152,16 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         system,
         messages: [{ role: "user", content: user }],
         model: "deep",
+        // Higher temperature: the complaint is sameness, and the blueprint —
+        // not the sampler — is what keeps the structure honest.
+        temperature: 0.9,
         userRef: auth.userId,
       });
-      return ok({ ...(res.data as object), _meta: { model: res.model, research: researchMeta(research) } });
+      return ok({
+        ...(res.data as object),
+        blueprint: blueprint.slots,
+        _meta: { model: res.model, behavioralCount: blueprint.behavioralCount, research: researchMeta(research) },
+      });
     },
   );
 
@@ -190,12 +205,17 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         intents: ["question", "experience"],
         max: 4,
       });
-      const { system, user } = generateQuestionsPrompt({
+      const blueprint = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
+        questionCount: args.questionCount ?? 6,
+        focusAreas: args.focusAreas,
+        ctx,
+      });
+      const { system, user } = generateQuestionsPrompt({
+        blueprint,
         jobDescription: args.jobDescription,
         focusAreas: args.focusAreas,
-        count: args.questionCount ?? 6,
         ctx,
         research,
       });
@@ -204,6 +224,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         system,
         messages: [{ role: "user", content: user }],
         model: "deep",
+        temperature: 0.9,
         userRef: auth.userId,
       });
       const data = res.data as { questions?: unknown; analysis?: unknown };
@@ -223,7 +244,13 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         sessionId,
         analysis: data.analysis,
         questions: data.questions,
-        _meta: { model: res.model, persisted: sessionId !== null, research: researchMeta(research) },
+        blueprint: blueprint.slots,
+        _meta: {
+          model: res.model,
+          persisted: sessionId !== null,
+          behavioralCount: blueprint.behavioralCount,
+          research: researchMeta(research),
+        },
       });
     },
   );
@@ -238,17 +265,26 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       inputSchema: S.submitAnswerInput,
     },
     async (args) => {
-      const ctx = await assembleLearnerContext(auth.db, auth.userId, {
-        field: args.field,
-        seniority: args.seniority,
-      });
+      const [ctx, stored, transcript] = await Promise.all([
+        assembleLearnerContext(auth.db, auth.userId, { field: args.field, seniority: args.seniority }),
+        readSessionQuestions(auth.db, args.sessionId),
+        readTranscript(auth.db, args.sessionId),
+      ]);
+
+      // The frontend doesn't always pass type/expectedTopics. Recover them from
+      // the question we generated for this session rather than evaluating blind.
+      const planned = matchStoredQuestion(stored, args.questionId, args.questionText);
+      const questionType = args.questionType ?? planned?.type ?? planned?.stage;
+      const expectedTopics = args.expectedTopics ?? planned?.expectedTopics;
+
       const { system, user } = evaluateAnswerPrompt({
         field: args.field,
         seniority: args.seniority,
         question: args.questionText,
-        questionType: args.questionType,
+        questionType,
         answer: args.answerText,
-        expectedTopics: args.expectedTopics,
+        expectedTopics,
+        transcript: transcript.map((t) => ({ question: t.question, answer: t.answer, score: t.score })),
         ctx,
       });
       const res = await horus.infer<{ score?: number }>({
@@ -256,6 +292,8 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         system,
         messages: [{ role: "user", content: user }],
         model: "deep",
+        // Scoring must be stable across runs — variety belongs in generation.
+        temperature: 0.2,
         userRef: auth.userId,
       });
 
@@ -266,7 +304,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
           user_id: auth.userId,
           question_id: args.questionId ?? null,
           question_text: args.questionText,
-          question_type: args.questionType ?? null,
+          question_type: questionType ?? null,
           answer_text: args.answerText,
           overall_score: num(res.data.score),
           time_taken_seconds: args.timeTakenSeconds ?? null,
@@ -320,52 +358,74 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       inputSchema: S.nextQuestionInput,
     },
     async (args) => {
-      let scores: number[] = [];
-      let covered: string[] = [];
-      try {
-        const { data } = await auth.db
-          .from("interview_answers")
-          .select("overall_score, question_text")
-          .eq("session_id", args.sessionId)
-          .order("answered_at", { ascending: true });
-        scores = (data ?? [])
-          .map((r: { overall_score: unknown }) => Number(r.overall_score))
-          .filter((n) => Number.isFinite(n));
-        covered = (data ?? [])
-          .map((r: { question_text: unknown }) => String(r.question_text ?? "").trim())
-          .filter(Boolean)
-          .slice(-10);
-      } catch {
-        /* best-effort */
-      }
+      const [ctx, transcript, stored] = await Promise.all([
+        assembleLearnerContext(auth.db, auth.userId, { field: args.field, seniority: args.seniority }),
+        readTranscript(auth.db, args.sessionId),
+        readSessionQuestions(auth.db, args.sessionId),
+      ]);
 
-      const ctx = await assembleLearnerContext(auth.db, auth.userId, {
-        field: args.field,
-        seniority: args.seniority,
-      });
+      const scores = transcript.map((t) => t.score).filter((n): n is number => n != null);
+      const covered = transcript.map((t) => t.question).slice(-10);
       const difficulty = nextDifficulty(scores);
       const skill = focusSkill(ctx);
 
-      const system = `Return ONLY JSON for ONE next interview question:
-{ "id": number, "question": string, "type": string, "difficulty": string, "category": string, "skillsTested": string[], "expectedTopics": string[] }
-The "difficulty" MUST be "${difficulty}".`;
-      const user = `FIELD: ${args.field} | SENIORITY: ${args.seniority ?? "Mid-Level"}
-${skill ? `Probe this weak skill: ${skill}.` : ""}
-${args.focusAreas?.length ? `THIS ROUND'S FOCUS: ${args.focusAreas.join(", ")}. Stay within it.` : ""}
-${
-  covered.length
-    ? `ALREADY ASKED THIS SESSION (do not repeat these themes):\n${covered.map((q) => `- ${q}`).join("\n")}`
-    : "Do not repeat themes already covered in this session."
-}`;
+      // Keep following the loop's shape: the slot we'd be on now decides the
+      // stage and type, so the adaptive path can't quietly drop the behavioural
+      // half of the interview.
+      const blueprint = interviewBlueprint({
+        field: args.field,
+        seniority: args.seniority,
+        // Size the loop to the session actually in progress, so a long session
+        // doesn't get pinned to the last slot once it runs past the default.
+        questionCount: Math.max(stored.length, transcript.length + 1, 6),
+        focusAreas: args.focusAreas,
+        ctx,
+      });
+      const slot: QuestionSlot | undefined =
+        blueprint.slots[Math.min(transcript.length, blueprint.slots.length - 1)];
+
+      const research = await researchSafely(deps.research, {
+        field: args.field,
+        role: ctx.goal?.targetRole,
+        seniority: args.seniority,
+        intents: ["question", "experience"],
+        max: 3,
+      });
+
+      const last = transcript[transcript.length - 1];
+      const { system, user } = nextQuestionPrompt({
+        field: args.field,
+        seniority: args.seniority,
+        difficulty,
+        slot: slot ? { stage: slot.stage, type: slot.type, intent: slot.intent } : undefined,
+        focusSkill: slot?.targetSkill ?? skill,
+        focusAreas: args.focusAreas,
+        lastExchange: last ? { question: last.question, answer: last.answer, score: last.score } : undefined,
+        covered,
+        ctx,
+        research,
+      });
 
       const res = await horus.infer({
         task: "interview.next_question",
         system,
         messages: [{ role: "user", content: user }],
         model: "fast",
+        temperature: 0.9,
         userRef: auth.userId,
       });
-      return ok({ question: res.data, difficulty, focusSkill: skill, _meta: { model: res.model } });
+
+      // Append to the session so finish_interview sees the full planned loop,
+      // not just the questions that happened to be answered.
+      await appendSessionQuestion(auth.db, args.sessionId, res.data);
+
+      return ok({
+        question: res.data,
+        difficulty,
+        stage: slot?.stage,
+        focusSkill: slot?.targetSkill ?? skill,
+        _meta: { model: res.model, research: researchMeta(research) },
+      });
     },
   );
 
@@ -379,38 +439,39 @@ ${
       inputSchema: S.finishInput,
     },
     async (args) => {
-      let transcript: Array<{ question: string; type?: string; answer: string; score?: number }> = [];
-      try {
-        const { data } = await auth.db
-          .from("interview_answers")
-          .select("question_text, question_type, answer_text, overall_score")
-          .eq("session_id", args.sessionId)
-          .order("answered_at", { ascending: true });
-        transcript = (data ?? []).map((r: any) => ({
-          question: r.question_text,
-          type: r.question_type ?? undefined,
-          answer: r.answer_text,
-          score: num(r.overall_score) ?? undefined,
-        }));
-      } catch {
-        /* best-effort */
-      }
+      const [ctx, transcript] = await Promise.all([
+        assembleLearnerContext(auth.db, auth.userId, { field: args.field, seniority: args.seniority }),
+        readTranscript(auth.db, args.sessionId),
+      ]);
 
-      const ctx = await assembleLearnerContext(auth.db, auth.userId, {
+      const research = await researchSafely(deps.research, {
+        field: args.field,
+        role: ctx.goal?.targetRole,
+        seniority: args.seniority,
+        intents: ["experience", "question"],
+        max: 3,
+      });
+      const blueprint = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
+        questionCount: Math.max(transcript.length, 6),
+        ctx,
       });
+
       const { system, user } = finalEvaluationPrompt({
         field: args.field,
         seniority: args.seniority,
         transcript,
+        coverage: stageCoverage(blueprint, transcript),
         ctx,
+        research,
       });
       const res = await horus.infer<{ overallScore?: number }>({
         task: "interview.final_evaluation",
         system,
         messages: [{ role: "user", content: user }],
         model: "deep",
+        temperature: 0.2,
         userRef: auth.userId,
       });
 
@@ -442,7 +503,35 @@ ${
         /* best-effort */
       }
 
-      return ok({ evaluation: res.data, _meta: { model: res.model } });
+      // Hand the debrief's focus to the learning side: get_learning_pathway
+      // reads this back so the plan targets what the mock just exposed.
+      let recommendationId: string | null = null;
+      try {
+        const focus = (res.data as { nextSessionFocus?: { skills?: string[]; why?: string } }).nextSessionFocus;
+        if (focus?.skills?.length) {
+          const { data } = await auth.db
+            .from("ai_recommendations")
+            .insert({
+              user_id: auth.userId,
+              recommendation_type: "practice_area",
+              title: `Focus after ${args.field} mock: ${focus.skills.slice(0, 3).join(", ")}`,
+              description: focus.why ?? null,
+              ai_reasoning: JSON.stringify(focus).slice(0, 4000),
+              status: "active",
+            })
+            .select("id")
+            .single();
+          recommendationId = data?.id ?? null;
+        }
+      } catch {
+        /* best-effort */
+      }
+
+      return ok({
+        evaluation: res.data,
+        recommendationId,
+        _meta: { model: res.model, research: researchMeta(research) },
+      });
     },
   );
 
@@ -491,4 +580,78 @@ ${
       return ok({ ...(res.data as object), struggleDetected: struggling, _meta: { model: res.model } });
     },
   );
+}
+
+/* ── session helpers (all best-effort: a divergent schema must never break a
+      live interview) ──────────────────────────────────────────────────────── */
+
+interface StoredQuestion {
+  id?: string | number;
+  question?: string;
+  stage?: string;
+  type?: string;
+  expectedTopics?: string[];
+}
+
+/** The questions we generated for this session, as stored on the session row. */
+async function readSessionQuestions(db: AuthContext["db"], sessionId: string): Promise<StoredQuestion[]> {
+  try {
+    const { data } = await db.from("interview_sessions").select("questions").eq("id", sessionId).maybeSingle();
+    const qs = (data as { questions?: unknown } | null)?.questions;
+    return Array.isArray(qs) ? (qs as StoredQuestion[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Match an answered question back to the one we planned, by id then by text. */
+function matchStoredQuestion(
+  stored: StoredQuestion[],
+  questionId: string | undefined,
+  questionText: string,
+): StoredQuestion | undefined {
+  if (stored.length === 0) return undefined;
+  if (questionId) {
+    const byId = stored.find((q) => String(q.id) === String(questionId));
+    if (byId) return byId;
+  }
+  const needle = questionText.replace(/\s+/g, " ").trim().toLowerCase();
+  return stored.find((q) => (q.question ?? "").replace(/\s+/g, " ").trim().toLowerCase() === needle);
+}
+
+/** Append an adaptively-generated question to the session's question list. */
+async function appendSessionQuestion(db: AuthContext["db"], sessionId: string, question: unknown): Promise<void> {
+  if (!question || typeof question !== "object") return;
+  try {
+    const existing = await readSessionQuestions(db, sessionId);
+    const next = [...existing, question as StoredQuestion];
+    await db
+      .from("interview_sessions")
+      .update({ questions: next, question_count: next.length })
+      .eq("id", sessionId);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** The session so far, oldest first. */
+async function readTranscript(
+  db: AuthContext["db"],
+  sessionId: string,
+): Promise<Array<{ question: string; type?: string; answer: string; score?: number }>> {
+  try {
+    const { data } = await db
+      .from("interview_answers")
+      .select("question_text, question_type, answer_text, overall_score")
+      .eq("session_id", sessionId)
+      .order("answered_at", { ascending: true });
+    return (data ?? []).map((r: any) => ({
+      question: String(r.question_text ?? "").trim(),
+      type: r.question_type ?? undefined,
+      answer: String(r.answer_text ?? ""),
+      score: num(r.overall_score) ?? undefined,
+    }));
+  } catch {
+    return [];
+  }
 }

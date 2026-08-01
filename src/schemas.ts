@@ -77,6 +77,15 @@ export const rankResourcesInput = {
   maxResults: z.number().int().min(1).max(20).optional(),
 };
 
+export const learningPathwayInput = {
+  /** Overrides the derived targets (defaults: last debrief → weak skills → field). */
+  skills: z.array(z.string().max(100)).max(8).optional(),
+  field: z.string().max(100).optional(),
+  goal: z.string().max(500).optional(),
+  weeks: z.number().int().min(1).max(12).optional(),
+  hoursPerWeek: z.number().int().min(1).max(60).optional(),
+};
+
 export const explainInput = {
   recommendationId: z.string().uuid(),
 };
@@ -145,7 +154,9 @@ export const setCareerGoalInput = {
 };
 
 export const buildRoadmapInput = {
-  targetRole: z.string().min(2).max(200),
+  // Optional: the tool falls back to the learner's stated goal / target job, so
+  // the UI doesn't have to re-ask for something they already told us.
+  targetRole: z.string().min(2).max(200).optional(),
   targetField: z.string().max(100).optional(),
   horizonWeeks: z.number().int().min(2).max(52).optional(),
   hoursPerWeek: z.number().int().min(1).max(60).optional(),
