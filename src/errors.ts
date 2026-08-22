@@ -30,3 +30,20 @@ export class UpstreamError extends AppError {
     super(message, 502);
   }
 }
+
+/**
+ * The user's plan allowance is spent.
+ *
+ * Kept separate from UpstreamError because it is not an outage: the upstream
+ * answered correctly, and the answer was no. Collapsing it into a 502 would
+ * tell the browser "something broke, try again", when retrying is the one
+ * thing that cannot help.
+ *
+ * `details` carries the upstream's quota body through untouched so the client
+ * can say which limit, how much is used, and when it resets.
+ */
+export class QuotaError extends AppError {
+  constructor(message = "Usage limit reached", readonly details?: unknown) {
+    super(message, 429);
+  }
+}

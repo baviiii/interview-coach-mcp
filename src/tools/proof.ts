@@ -46,6 +46,7 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
         messages: [{ role: "user", content: user }],
         model: "fast",
         userRef: auth.userId,
+        userToken: auth.jwt,
       });
 
       const tips = Array.isArray(draft.data.tips) ? draft.data.tips.slice(0, count) : [];

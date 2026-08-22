@@ -119,6 +119,8 @@ async function rankResources(
       messages: [{ role: "user", content: user }],
       model: "fast",
       userRef: auth.userId,
+
+      userToken: auth.jwt,
     });
     const suggested = (res.data.resources ?? []).slice(0, max).map((r, i) => ({
       id: `suggested:${i + 1}`,
@@ -142,6 +144,8 @@ async function rankResources(
       messages: [{ role: "user", content: user }],
       model: "fast",
       userRef: auth.userId,
+
+      userToken: auth.jwt,
     });
     ranked = res.data.ranked ?? [];
   } catch {
@@ -301,6 +305,8 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
             messages: [{ role: "user", content: user }],
             model: "deep",
             userRef: auth.userId,
+
+            userToken: auth.jwt,
           });
         })(),
         rankResources(deps, ctx, {

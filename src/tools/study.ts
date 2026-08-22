@@ -91,6 +91,8 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         messages: [{ role: "user", content: user }],
         model: "deep",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       let recommendationId: string | null = null;
@@ -173,6 +175,8 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         messages: [{ role: "user", content: user }],
         model: "fast",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       return ok({
@@ -248,6 +252,8 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         messages: [{ role: "user", content: user }],
         model: level === "interview" ? "deep" : "fast",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       let proof = null;

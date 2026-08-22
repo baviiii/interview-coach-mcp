@@ -1,4 +1,4 @@
-import { UpstreamError } from "../../errors.js";
+import { QuotaError, UpstreamError } from "../../errors.js";
 import type {
   GraphQueryRequest,
   GraphResult,
@@ -33,7 +33,15 @@ export interface HttpHorusConfig {
 export class HttpHorusClient implements HorusPort {
   constructor(private readonly cfg: HttpHorusConfig) {}
 
-  private headers(): Record<string, string> {
+  /**
+   * @param userToken The end user's own credential, when one is available.
+   *
+   * It travels as `x-user-token` rather than in `Authorization`, because that
+   * header already carries this server's API key and the upstream needs both:
+   * the key says which tenant is calling, the user token says on whose behalf.
+   * Collapsing them into one header would force the upstream to guess.
+   */
+  private headers(userToken?: string): Record<string, string> {
     const h: Record<string, string> = {
       "Content-Type": "application/json",
       "x-tenant": this.cfg.tenant,
@@ -42,16 +50,19 @@ export class HttpHorusClient implements HorusPort {
       h["Authorization"] = `Bearer ${this.cfg.apiKey}`;
       h["x-functions-key"] = this.cfg.apiKey; // Azure Functions compatibility
     }
+    if (userToken) {
+      h["x-user-token"] = userToken;
+    }
     return h;
   }
 
-  private async post<R>(url: string, body: unknown): Promise<R> {
+  private async post<R>(url: string, body: unknown, userToken?: string): Promise<R> {
     const timeoutMs = this.cfg.timeoutMs ?? 60_000;
     let res: Response;
     try {
       res = await fetch(url, {
         method: "POST",
-        headers: this.headers(),
+        headers: this.headers(userToken),
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -64,6 +75,23 @@ export class HttpHorusClient implements HorusPort {
     }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+
+      // A spent allowance is an answer, not an outage. Pass it through with its
+      // status and body intact so the browser can explain the limit; folding it
+      // into a 502 would tell the user to retry, which cannot work.
+      if (res.status === 429) {
+        let details: unknown;
+        let message = "Usage limit reached";
+        try {
+          const body = JSON.parse(text) as { error?: string; details?: unknown };
+          if (body.error) message = body.error;
+          details = body.details;
+        } catch {
+          // Non-JSON 429 — the status alone still tells us enough.
+        }
+        throw new QuotaError(message, details);
+      }
+
       throw new UpstreamError(`Horus ${res.status}: ${text.slice(0, 300)}`);
     }
     return (await res.json()) as R;
@@ -88,7 +116,7 @@ export class HttpHorusClient implements HorusPort {
       maxTokens: req.maxTokens ?? 4000,
       tenant: this.cfg.tenant,
       userRef: req.userRef,
-    });
+    }, req.userToken);
 
     const raw = out.content ?? out.output ?? "";
     return {

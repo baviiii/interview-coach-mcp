@@ -79,6 +79,8 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         messages: [{ role: "user", content: user }],
         model: "deep",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       let recommendationId: string | null = null;
@@ -156,6 +158,8 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         // not the sampler — is what keeps the structure honest.
         temperature: 0.9,
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
       return ok({
         ...(res.data as object),
@@ -226,6 +230,8 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         model: "deep",
         temperature: 0.9,
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
       const data = res.data as { questions?: unknown; analysis?: unknown };
 
@@ -295,6 +301,8 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         // Scoring must be stable across runs — variety belongs in generation.
         temperature: 0.2,
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       let persisted = false;
@@ -413,6 +421,8 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         model: "fast",
         temperature: 0.9,
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       // Append to the session so finish_interview sees the full planned loop,
@@ -473,6 +483,8 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         model: "deep",
         temperature: 0.2,
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       try {
@@ -575,6 +587,8 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         messages: [{ role: "user", content: user }],
         model: "fast",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       return ok({ ...(res.data as object), struggleDetected: struggling, _meta: { model: res.model } });

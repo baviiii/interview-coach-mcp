@@ -78,6 +78,7 @@ Identify patterns and provide actionable recommendations grounded strictly in th
         messages: [{ role: "user", content: user }],
         model: "deep",
         userRef: auth.userId,
+        userToken: auth.jwt,
       });
       return ok({ ...(res.data as object), _meta: { model: res.model } });
     },
@@ -134,6 +135,7 @@ Do not invent metrics that aren't supported by the data above.`;
         messages: [{ role: "user", content: user }],
         model: "fast",
         userRef: auth.userId,
+        userToken: auth.jwt,
       });
       return ok({ ...(res.data as object), _meta: { model: res.model } });
     },

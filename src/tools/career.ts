@@ -107,6 +107,8 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         messages: [{ role: "user", content: user }],
         model: "deep",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       let recommendationId: string | null = null;
@@ -177,6 +179,8 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         messages: [{ role: "user", content: user }],
         model: "fast",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       return ok({ facts, analysis: res.data, _meta: { model: res.model, research: researchMeta(research) } });
@@ -222,6 +226,8 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         messages: [{ role: "user", content: user }],
         model: "deep",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       // Ground the top recommendation in a real source (proof-backed advice).
@@ -454,6 +460,8 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         messages: [{ role: "user", content: user }],
         model: "deep",
         userRef: auth.userId,
+
+        userToken: auth.jwt,
       });
 
       let recommendationId: string | null = null;

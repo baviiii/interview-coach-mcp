@@ -115,6 +115,7 @@ export function registerProfileTools(server: McpServer, deps: ToolDeps): void {
         ],
         model: "deep",
         userRef: auth.userId,
+        userToken: auth.jwt,
       });
 
       let persisted = false;

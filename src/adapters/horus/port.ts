@@ -32,6 +32,20 @@ export interface InferRequest {
   maxTokens?: number;
   /** For per-user cost attribution. */
   userRef?: string;
+  /**
+   * The end user's own credential, for a provider that meters per user.
+   *
+   * Distinct from `userRef`, and the distinction is the point: `userRef` is a
+   * label the provider has to take on trust, while this is something it can
+   * verify for itself. A provider that can check it may apply that user's real
+   * plan and limits rather than treating every request from this server as one
+   * anonymous caller.
+   *
+   * Opaque on purpose — this interface is the vendor-neutral seam, so it says
+   * "a token the provider understands" and not "a Supabase JWT". Adapters that
+   * have no use for it ignore it.
+   */
+  userToken?: string;
 }
 
 export interface InferResult<T = unknown> {
