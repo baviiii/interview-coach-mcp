@@ -5,7 +5,7 @@
  */
 
 import { researchIsEmpty, type FieldResearch, type ResearchKind, type ResearchSnippet } from "../adapters/research/port.js";
-import { getCareerPath, getSeniorityModifier } from "./career-paths.js";
+import { DOMAIN_FORMATS, FORMAT_GUIDE } from "./field-profile.js";
 import { blueprintText, type InterviewBlueprint, type InterviewStage } from "./interview-loop.js";
 import type { LearnerContext } from "../types.js";
 
@@ -205,8 +205,8 @@ export function generateQuestionsPrompt(args: {
   research?: FieldResearch;
 }): PromptPair {
   const bp = args.blueprint;
-  const path = getCareerPath(bp.field);
-  const mod = getSeniorityModifier(path, bp.seniority);
+  const types = [...new Set(bp.slots.map((s) => s.type))];
+  const formatLines = types.map((t) => `- ${t}: ${FORMAT_GUIDE[t] ?? t}`).join("\n");
 
   const system = `You are a seasoned hiring manager and interview panelist for ${bp.field} roles, with 15+ years designing real interview loops in this exact field. You are running a live mock interview for one specific candidate.
 
@@ -219,10 +219,13 @@ HOW YOU WRITE QUESTIONS:
 ${BANNED_QUESTIONS}
 
 ROLE CALIBRATION — ${bp.field} (${bp.seniority}):
-- Technical depth weight: ${Math.round(mod.technicalDepth * 100)}%
-- Leadership/soft weight: ${Math.round(mod.leadershipFocus * 100)}%${
+- Craft depth weight: ${Math.round(bp.depth * 100)}%
+- Leadership/soft weight: ${Math.round(bp.leadership * 100)}%${
     bp.fieldMatched && bp.keySkills.length ? `\n- Key skills for this field: ${bp.keySkills.join(", ")}` : ""
   }
+
+QUESTION FORMATS IN THIS LOOP:
+${formatLines}
 
 Return ONLY JSON:
 {
@@ -230,7 +233,7 @@ Return ONLY JSON:
   "questions": [{
     "id": number, "question": string,
     "stage": "warmup|behavioral|domain|situational|closing",
-    "type": "technical|behavioral|situational|system_design|coding|case_study",
+    "type": "${types.join("|")}",
     "difficulty": "easy|medium|hard|expert", "category": string,
     "skillsTested": string[], "expectedTopics": string[], "timeAllocationMinutes": number,
     "whyThisQuestion": "one sentence, addressed to the candidate, on why THEY are being asked this — cite the specific thing about them that prompted it",
@@ -313,6 +316,14 @@ function rubricFor(questionType?: string): { weights: string; emphasis: string; 
       emphasis:
         'A story without a specific situation, their OWN actions ("we" everywhere is a red flag) and a concrete outcome cannot score above 5, however fluent it sounds.',
       star: true,
+    };
+  }
+  if (/practical|hands_on/.test(t)) {
+    return {
+      weights: "content — a correct, safe, standards-compliant approach (45%), communication — can they walk someone through it step by step (20%), behavioral — when they would check, escalate or stop (15%), strategic — judgment about constraints, risk and priorities (20%)",
+      emphasis:
+        "Score what they would actually DO, in order. Skipping a safety, legal or quality check this field treats as non-negotiable caps the score at 5, however confident the answer sounds.",
+      star: false,
     };
   }
   if (/technical|coding|system_design|design/.test(t)) {
@@ -558,13 +569,13 @@ export function certificationRecommendPrompt(args: {
   count: number;
   research?: FieldResearch;
 }): PromptPair {
-  const system = `You are a pragmatic credentials advisor for ANY field (trades, healthcare, finance, law, tech…). From the CANDIDATE CREDENTIALS below — a mix of a vetted catalog and credentials researched from real sources — pick the ${args.count} best next moves for THIS learner. Recommend ONLY from that list; never invent a credential. Optimize for hiring/licensing impact per prep hour, sequenced so prerequisites come first.
+  const system = `You are a pragmatic credentials advisor for ANY field (trades, healthcare, finance, law, tech…). From the CANDIDATE CREDENTIALS below — credentials researched from real sources, plus ones this field is known to expect — pick the ${args.count} best next moves for THIS learner. Recommend ONLY from that list; never invent a credential. Optimize for hiring/licensing impact per prep hour, sequenced so prerequisites and legally required licences come first. For a candidate whose source is "model knowledge", say in whyThisOne that the learner should confirm current requirements with the issuing body.
 
 Return ONLY JSON:
 {
   "recommendations": [{
     "certificationId": string|null, "name": string, "priority": number,
-    "source": "the source of this credential — 'catalog' or the URL it was researched from (copy it from the candidate line)",
+    "source": "the source of this credential — the URL it was researched from, or 'model knowledge' (copy it from the candidate line)",
     "whyThisOne": "tied to their goal, gaps and existing certs",
     "prepPlan": "2-3 sentence prep approach given their weekly hours",
     "estimatedWeeks": number, "examCostUsd": number|null,
@@ -576,7 +587,7 @@ Return ONLY JSON:
 
   const user = `${careerContextBlock(args.ctx)}
 ${realWorldBlock(args.research, { only: ["credential", "fact"] })}
-CANDIDATE CREDENTIALS (id :: name :: level :: prep hours :: cost :: market signal :: source/notes — id may be "—" for researched ones):
+CANDIDATE CREDENTIALS (id :: name :: level :: prep hours :: cost :: market signal :: source/notes — id is "—" unless the catalog has facts for it):
 ${args.candidates}
 
 CONSTRAINTS: budget ${args.budgetUsd ? `$${args.budgetUsd}` : "not stated"}; study time ${args.hoursPerWeek ?? 5} h/week.
@@ -681,7 +692,7 @@ Return ONLY JSON:
 {
   "drill": {
     "skill": string,
-    "type": "recall|scenario|code|whiteboard|teach_back",
+    "type": "recall|scenario|hands_on|teach_back",
     "prompt": "the exercise itself — specific and self-contained",
     "difficulty": string,
     "timeboxMinutes": number,
@@ -694,7 +705,7 @@ Return ONLY JSON:
 DIFFICULTY: ${args.difficulty} (must match exactly)
 FIELD: ${args.field ?? args.ctx.targetField ?? "their field"}${contextBlock(args.ctx)}
 
-Choose the drill "type" that best builds this skill at this level. timeboxMinutes between 5 and 25.`;
+Choose the drill "type" that best builds this skill at this level. "hands_on" means doing the real work of this field in miniature — writing code for a developer, calculating a dose for a nurse, drafting a clause for a paralegal. timeboxMinutes between 5 and 25.`;
 
   return { system, user };
 }
@@ -779,6 +790,27 @@ ${args.certFacts}
 ${args.onboarding ? `\nONBOARDING ANALYSIS (earlier AI read of their resume/story):\n${JSON.stringify(args.onboarding).slice(0, 1500)}` : ""}
 
 confidence 0-1 reflecting how much real signal exists. List basedOn honestly — if data is thin, say so and keep the persona conservative.`;
+
+  return { system, user };
+}
+
+/**
+ * Describe how one occupation hires — the input that replaced the hardcoded
+ * career-path table. Field-level, not learner-level, so it is cached per field.
+ */
+export function fieldProfilePrompt(args: { field: string; role?: string }): PromptPair {
+  const system = `You are a labour-market analyst who knows how hiring actually works in EVERY occupation — trades, healthcare, hospitality, law, finance, education, government, tech and everything between. Describe how employers in the given field interview and what they screen for. Be concrete to this field; do not default to software or corporate-office assumptions unless the field is one.
+
+Return ONLY JSON:
+{
+  "keySkills": ["4-6 core competencies interviews in this field test, in the field's own vocabulary"],
+  "technicalWeight": "number 0.2-0.8 — the share of a typical interview spent on craft knowledge rather than behaviour",
+  "domainFormats": ["which of ${DOMAIN_FORMATS.join(" | ")} this field's interviews really use, most typical first — only include coding or system_design if candidates are genuinely asked to write code or design software"],
+  "credentials": [{ "name": "exact licence/certification name", "required": "true if needed to legally or practically work in the field", "note": "one line on who issues it and when it matters" }]
+}
+List at most 6 credentials, and only real ones you are confident exist. Credentials means licences, registrations and certifications — never degrees or diplomas of general education. If the field has none that matter, return an empty list.`;
+
+  const user = `FIELD: ${args.field}${args.role ? `\nTARGET ROLE: ${args.role}` : ""}`;
 
   return { system, user };
 }

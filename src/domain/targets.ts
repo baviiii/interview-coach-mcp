@@ -10,7 +10,7 @@
  * on, so the caller can say so honestly.
  */
 
-import { resolveCareerPath } from "./career-paths.js";
+import type { FieldProfile } from "./field-profile.js";
 import type { FieldResearch } from "../adapters/research/port.js";
 import type { LearnerContext } from "../types.js";
 
@@ -32,6 +32,9 @@ export interface DerivedTargets {
 
 const MAX_TARGETS = 4;
 
+/** Last resort when nothing field-specific is known — true of every occupation. */
+const UNIVERSAL_FUNDAMENTALS = ["Communication", "Problem Solving", "Teamwork", "Adaptability"];
+
 function withGoal(skill: string, from: number): SkillTarget {
   return { skill, from, to: Math.min(85, Math.max(from + 20, 50)) };
 }
@@ -47,6 +50,7 @@ export function deriveSkillTargets(args: {
   skills?: string[];
   field?: string;
   research?: FieldResearch;
+  profile?: FieldProfile;
 }): DerivedTargets {
   const { ctx } = args;
 
@@ -77,10 +81,10 @@ export function deriveSkillTargets(args: {
   }
 
   const field = args.field ?? ctx.goal?.targetField ?? ctx.targetField;
-  const { path, matched } = resolveCareerPath(field);
-  if (matched) {
+  const profile = args.profile;
+  if (profile?.source === "model" && profile.keySkills.length > 0) {
     return {
-      targets: path.keySkills.slice(0, MAX_TARGETS).map((s) => withGoal(s, 0)),
+      targets: profile.keySkills.slice(0, MAX_TARGETS).map((s) => withGoal(s, 0)),
       source: "field",
       note: `No tested skills yet — targets derived from the core skills of ${field}. Finish a mock interview to replace these with measured ones.`,
     };
@@ -100,7 +104,7 @@ export function deriveSkillTargets(args: {
 
   if (field) {
     return {
-      targets: path.keySkills.slice(0, MAX_TARGETS).map((s) => withGoal(s, 0)),
+      targets: UNIVERSAL_FUNDAMENTALS.slice(0, MAX_TARGETS).map((s) => withGoal(s, 0)),
       source: "field",
       note: `No tested skills yet and nothing field-specific found for "${field}" — starting from universal fundamentals. Finish a mock interview to make these real.`,
     };

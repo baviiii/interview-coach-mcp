@@ -1,12 +1,14 @@
 /**
- * Curated certification catalog — the deterministic backbone for cert-based
- * career guidance. The model personalizes; this file supplies the facts
- * (issuer, level, skills vouched for, prep effort, market signal) so advice is
- * grounded in real credentials, not hallucinated ones. Skills use the same
- * names as the taxonomy/skill matrix so certs feed proficiency directly.
+ * Curated certification catalog — a lookup table of facts (issuer, level,
+ * skills vouched for, prep effort, cost, market signal) for credentials we
+ * happen to know well. It does NOT decide what to suggest: suggestions come
+ * from research and the field profile, and the catalog only enriches a
+ * suggestion it recognises. That keeps its tech-heavy contents from leaking
+ * into fields it knows nothing about.
  */
 
 import type { ResearchSnippet } from "../adapters/research/port.js";
+import type { ProfileCredential } from "./field-profile.js";
 import type { CertificationStatus } from "../types.js";
 
 export type CertLevel = "foundational" | "associate" | "professional" | "specialty" | "expert";
@@ -16,9 +18,7 @@ export interface CertCatalogEntry {
   name: string;
   issuer: string;
   level: CertLevel;
-  /** Career paths this cert serves — matched loosely against the learner's field. */
-  careerPaths: string[];
-  /** Skills (taxonomy names) the cert vouches for. */
+  /** Skills the cert vouches for. */
   skills: string[];
   /** Typical prep effort range in hours for someone near the target level. */
   prepHours: [number, number];
@@ -39,7 +39,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "AWS Certified Cloud Practitioner",
     issuer: "Amazon Web Services",
     level: "foundational",
-    careerPaths: ["Software Engineering", "DevOps & SRE", "IT Support"],
     skills: ["Cloud Services"],
     prepHours: [20, 40],
     examCostUsd: 100,
@@ -52,7 +51,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "AWS Certified Solutions Architect – Associate",
     issuer: "Amazon Web Services",
     level: "associate",
-    careerPaths: ["DevOps & SRE", "Software Engineering"],
     skills: ["Cloud Services", "System Design", "Networking"],
     prepHours: [60, 120],
     examCostUsd: 150,
@@ -65,7 +63,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "AWS Certified Developer – Associate",
     issuer: "Amazon Web Services",
     level: "associate",
-    careerPaths: ["Software Engineering"],
     skills: ["Cloud Services", "Databases"],
     prepHours: [50, 100],
     examCostUsd: 150,
@@ -78,7 +75,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "AWS Certified Solutions Architect – Professional",
     issuer: "Amazon Web Services",
     level: "professional",
-    careerPaths: ["DevOps & SRE", "Software Engineering"],
     skills: ["Cloud Services", "System Design", "Security"],
     prepHours: [120, 200],
     examCostUsd: 300,
@@ -92,7 +88,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "AWS Certified Machine Learning – Specialty",
     issuer: "Amazon Web Services",
     level: "specialty",
-    careerPaths: ["Data Science & ML"],
     skills: ["Cloud Services", "Algorithms", "Databases"],
     prepHours: [80, 150],
     examCostUsd: 300,
@@ -106,7 +101,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Microsoft Azure Fundamentals (AZ-900)",
     issuer: "Microsoft",
     level: "foundational",
-    careerPaths: ["Software Engineering", "DevOps & SRE", "IT Support"],
     skills: ["Cloud Services"],
     prepHours: [15, 30],
     examCostUsd: 99,
@@ -119,7 +113,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Microsoft Azure Administrator (AZ-104)",
     issuer: "Microsoft",
     level: "associate",
-    careerPaths: ["DevOps & SRE", "IT Support"],
     skills: ["Cloud Services", "Networking", "Security"],
     prepHours: [60, 100],
     examCostUsd: 165,
@@ -132,7 +125,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Google Associate Cloud Engineer",
     issuer: "Google Cloud",
     level: "associate",
-    careerPaths: ["DevOps & SRE", "Software Engineering"],
     skills: ["Cloud Services", "Networking"],
     prepHours: [50, 90],
     examCostUsd: 125,
@@ -145,7 +137,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Google Professional Data Engineer",
     issuer: "Google Cloud",
     level: "professional",
-    careerPaths: ["Data Science & ML", "Data Engineering"],
     skills: ["Databases", "Cloud Services", "System Design"],
     prepHours: [80, 140],
     examCostUsd: 200,
@@ -158,7 +149,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Google Professional Machine Learning Engineer",
     issuer: "Google Cloud",
     level: "professional",
-    careerPaths: ["Data Science & ML"],
     skills: ["Algorithms", "Cloud Services"],
     prepHours: [80, 140],
     examCostUsd: 200,
@@ -171,7 +161,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Certified Kubernetes Administrator (CKA)",
     issuer: "Cloud Native Computing Foundation",
     level: "professional",
-    careerPaths: ["DevOps & SRE"],
     skills: ["Cloud Services", "Networking", "Security"],
     prepHours: [60, 120],
     examCostUsd: 445,
@@ -184,7 +173,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Certified Kubernetes Application Developer (CKAD)",
     issuer: "Cloud Native Computing Foundation",
     level: "associate",
-    careerPaths: ["Software Engineering", "DevOps & SRE"],
     skills: ["Cloud Services"],
     prepHours: [50, 100],
     examCostUsd: 445,
@@ -197,7 +185,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "HashiCorp Certified: Terraform Associate",
     issuer: "HashiCorp",
     level: "associate",
-    careerPaths: ["DevOps & SRE"],
     skills: ["Cloud Services"],
     prepHours: [30, 60],
     examCostUsd: 70,
@@ -210,7 +197,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "CompTIA Security+",
     issuer: "CompTIA",
     level: "associate",
-    careerPaths: ["Security", "DevOps & SRE", "IT Support"],
     skills: ["Security", "Networking"],
     prepHours: [40, 80],
     examCostUsd: 404,
@@ -223,7 +209,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "CISSP",
     issuer: "ISC2",
     level: "expert",
-    careerPaths: ["Security"],
     skills: ["Security", "Leadership"],
     prepHours: [150, 300],
     examCostUsd: 749,
@@ -237,7 +222,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "OffSec Certified Professional (OSCP)",
     issuer: "OffSec",
     level: "professional",
-    careerPaths: ["Security"],
     skills: ["Security", "Networking"],
     prepHours: [200, 400],
     examCostUsd: 1749,
@@ -250,7 +234,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Cisco Certified Network Associate (CCNA)",
     issuer: "Cisco",
     level: "associate",
-    careerPaths: ["Networking", "DevOps & SRE", "IT Support"],
     skills: ["Networking", "Security"],
     prepHours: [60, 120],
     examCostUsd: 300,
@@ -263,7 +246,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Databricks Certified Data Engineer Associate",
     issuer: "Databricks",
     level: "associate",
-    careerPaths: ["Data Engineering", "Data Science & ML"],
     skills: ["Databases", "Algorithms"],
     prepHours: [40, 80],
     examCostUsd: 200,
@@ -276,7 +258,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "SnowPro Core Certification",
     issuer: "Snowflake",
     level: "associate",
-    careerPaths: ["Data Engineering", "Data Science & ML"],
     skills: ["Databases"],
     prepHours: [40, 70],
     examCostUsd: 175,
@@ -289,7 +270,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Project Management Professional (PMP)",
     issuer: "Project Management Institute",
     level: "professional",
-    careerPaths: ["Product Management", "Delivery & Program Management"],
     skills: ["Leadership", "Communication", "Problem Solving"],
     prepHours: [100, 180],
     examCostUsd: 575,
@@ -303,7 +283,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Certified ScrumMaster (CSM)",
     issuer: "Scrum Alliance",
     level: "foundational",
-    careerPaths: ["Product Management", "Delivery & Program Management"],
     skills: ["Leadership", "Communication", "Teamwork"],
     prepHours: [16, 24],
     examCostUsd: 500,
@@ -316,7 +295,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "Certified Scrum Product Owner (CSPO)",
     issuer: "Scrum Alliance",
     level: "foundational",
-    careerPaths: ["Product Management"],
     skills: ["Communication", "Critical Thinking", "Leadership"],
     prepHours: [16, 24],
     examCostUsd: 500,
@@ -329,7 +307,6 @@ export const CERT_CATALOG: CertCatalogEntry[] = [
     name: "CompTIA A+",
     issuer: "CompTIA",
     level: "foundational",
-    careerPaths: ["IT Support"],
     skills: ["Networking", "Problem Solving"],
     prepHours: [60, 100],
     examCostUsd: 506,
@@ -349,12 +326,17 @@ const norm = (s: string): string =>
 export function matchCertification(name: string, issuer?: string): CertCatalogEntry | null {
   const n = norm(name);
   if (!n) return null;
+  // Whole words only: raw substrings matched "RN" inside "kubernetes".
+  const within = (outer: string, inner: string) => inner.length >= 3 && ` ${outer} `.includes(` ${inner} `);
   let best: CertCatalogEntry | null = null;
   let bestLen = 0;
   for (const entry of CERT_CATALOG) {
     const candidates = [norm(entry.name), ...entry.aliases.map(norm)];
     for (const c of candidates) {
-      if ((n.includes(c) || c.includes(n)) && c.length > bestLen) {
+      // A catalog name may contain the input when it's several words or a short
+      // acronym ("CKA"), but not one generic word ("Associate" is not an AWS cert).
+      const specific = n.includes(" ") || n.length <= 5;
+      if ((n === c || within(n, c) || (specific && within(c, n))) && c.length > bestLen) {
         best = entry;
         bestLen = c.length;
       }
@@ -378,79 +360,35 @@ export function certStatus(expiryDate?: string | null, now = new Date()): Certif
   return exp <= soon ? "expiring_soon" : "active";
 }
 
-const LEVEL_FIT: Record<string, CertLevel[]> = {
-  Junior: ["foundational", "associate"],
-  "Mid-Level": ["associate", "professional"],
-  Senior: ["professional", "specialty", "expert"],
-  Lead: ["professional", "specialty", "expert"],
-  Manager: ["professional", "expert"],
+const LEVEL_FIT: Record<"junior" | "mid" | "senior" | "manager", CertLevel[]> = {
+  junior: ["foundational", "associate"],
+  mid: ["associate", "professional"],
+  senior: ["professional", "specialty", "expert"],
+  manager: ["professional", "expert"],
 };
 
-export interface CertSuggestion extends CertCatalogEntry {
-  levelFit: "ideal" | "stretch" | "adjacent";
-  prereqNote?: string;
+function levelFitFor(level: CertLevel, seniority?: string): "ideal" | "stretch" | "adjacent" {
+  const s = seniority ?? "";
+  const band = /manager|director|head|chief/i.test(s)
+    ? "manager"
+    : /senior|lead|staff|principal/i.test(s)
+      ? "senior"
+      : /junior|entry|intern|graduate|trainee|apprentice/i.test(s)
+        ? "junior"
+        : "mid";
+  const ideal = LEVEL_FIT[band];
+  if (ideal.includes(level)) return "ideal";
+  return ideal[ideal.length - 1] === "associate" && level === "professional" ? "stretch" : "adjacent";
 }
 
-/**
- * Deterministic next-cert shortlist for a field + seniority, excluding what the
- * learner already holds. The model then personalizes ordering and reasoning.
- */
-export function nextCertSuggestions(opts: {
-  field?: string;
-  seniority?: string;
-  ownedCatalogIds: string[];
-  max?: number;
-  /**
-   * When the field matches no catalog career path, fall back to the whole tech
-   * catalog. Defaults to true (legacy behavior). Pass FALSE for non-tech fields
-   * that have researched credentials — otherwise a nurse gets AWS suggestions.
-   */
-  fallbackToAll?: boolean;
-}): CertSuggestion[] {
-  const fieldNorm = norm(opts.field ?? "Software Engineering");
-  const owned = new Set(opts.ownedCatalogIds);
-  const idealLevels = LEVEL_FIT[opts.seniority ?? "Mid-Level"] ?? LEVEL_FIT["Mid-Level"]!;
-
-  const pool = CERT_CATALOG.filter((e) => !owned.has(e.id)).filter((e) =>
-    e.careerPaths.some((p) => {
-      const pn = norm(p);
-      return pn.includes(fieldNorm) || fieldNorm.includes(pn);
-    }),
-  );
-  const candidates =
-    pool.length > 0
-      ? pool
-      : opts.fallbackToAll === false
-        ? [] // non-tech field: let researched credentials fill the list instead
-        : CERT_CATALOG.filter((e) => !owned.has(e.id) && e.level !== "expert");
-
-  const scored = candidates.map((e) => {
-    const fit: CertSuggestion["levelFit"] = idealLevels.includes(e.level)
-      ? "ideal"
-      : idealLevels[idealLevels.length - 1] === "associate" && e.level === "professional"
-        ? "stretch"
-        : "adjacent";
-    const unmetPrereqs = (e.prereqs ?? []).filter((p) => !owned.has(p));
-    return {
-      ...e,
-      levelFit: fit,
-      prereqNote: unmetPrereqs.length ? `Prerequisite first: ${unmetPrereqs.join(", ")}` : undefined,
-    };
-  });
-
-  const fitRank = { ideal: 0, stretch: 1, adjacent: 2 } as const;
-  scored.sort((a, b) => fitRank[a.levelFit] - fitRank[b.levelFit] || a.prepHours[0] - b.prepHours[0]);
-  return scored.slice(0, opts.max ?? 6);
-}
-
-/* ── credential candidates: curated catalog ∪ researched (any field) ───────── */
+/* ── credential candidates: researched ∪ field profile, enriched by catalog ── */
 
 /**
- * One credential the model may recommend. Either a curated-catalog entry (full
- * deterministic facts, `source: "catalog"`) or one researched from a real source
- * for a non-tech field (`source` = its URL; cost/effort unknown). The merge is
- * how the cert tools escape the 25-entry tech catalog without ever inventing a
- * credential — researched ones always carry their source.
+ * One credential the model may recommend. It comes from research (`source` =
+ * the URL it was found at) or from the field profile (`source` = "model
+ * knowledge"). When the catalog recognises it, the catalog's facts — id, level,
+ * prep hours, cost — are filled in; otherwise those stay unknown rather than
+ * guessed.
  */
 export interface CredentialCandidate {
   id: string | null;
@@ -459,9 +397,9 @@ export interface CredentialCandidate {
   prepHours?: [number, number];
   examCostUsd?: number | null;
   marketSignal: string;
-  /** "catalog" or the URL it was researched from. */
+  /** The URL it was researched from, or "model knowledge". */
   source: string;
-  levelFit?: CertSuggestion["levelFit"];
+  levelFit?: "ideal" | "stretch" | "adjacent";
   prereqNote?: string;
 }
 
@@ -478,47 +416,56 @@ function credentialNameFrom(snippet: ResearchSnippet): string | null {
   return looksLikeName ? head : null;
 }
 
-/** Merge curated suggestions with researched credentials, dedup by name, cap. */
-export function mergeCredentialCandidates(
-  catalog: CertSuggestion[],
-  researched: ResearchSnippet[],
-  max = 8,
-): CredentialCandidate[] {
+/**
+ * Build the candidate list: researched credentials first (they carry a real
+ * source), then the ones the field profile says this field expects. Anything
+ * the learner already holds is dropped; duplicates collapse by catalog id or
+ * name. The catalog never adds a candidate of its own.
+ */
+export function buildCredentialCandidates(opts: {
+  researched: ResearchSnippet[];
+  expected: ProfileCredential[];
+  held: Array<{ name: string; catalogId?: string | null }>;
+  seniority?: string;
+  max?: number;
+}): CredentialCandidate[] {
+  const heldIds = new Set(opts.held.map((h) => h.catalogId).filter(Boolean));
+  const heldNames = new Set(opts.held.map((h) => norm(h.name)));
   const out: CredentialCandidate[] = [];
   const seen = new Set<string>();
 
-  for (const c of catalog) {
-    const key = norm(c.name);
-    if (seen.has(key)) continue;
+  const add = (name: string, marketSignal: string, source: string) => {
+    const entry = matchCertification(name);
+    const key = entry?.id ?? norm(name);
+    if (!key || seen.has(key) || heldNames.has(norm(name)) || (entry && heldIds.has(entry.id))) return;
     seen.add(key);
+    if (!entry) {
+      out.push({ id: null, name, marketSignal, source });
+      return;
+    }
+    const unmet = (entry.prereqs ?? []).filter((p) => !heldIds.has(p));
     out.push({
-      id: c.id,
-      name: c.name,
-      level: c.level,
-      prepHours: c.prepHours,
-      examCostUsd: c.examCostUsd,
-      marketSignal: c.marketSignal,
-      source: "catalog",
-      levelFit: c.levelFit,
-      prereqNote: c.prereqNote,
+      id: entry.id,
+      name: entry.name,
+      level: entry.level,
+      prepHours: entry.prepHours,
+      examCostUsd: entry.examCostUsd,
+      marketSignal: entry.marketSignal,
+      source,
+      levelFit: levelFitFor(entry.level, opts.seniority),
+      prereqNote: unmet.length ? `Prerequisite first: ${unmet.join(", ")}` : undefined,
     });
-  }
+  };
 
-  for (const snippet of researched) {
+  for (const snippet of opts.researched) {
     const name = credentialNameFrom(snippet);
-    if (!name) continue;
-    const key = norm(name);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      id: null,
-      name,
-      marketSignal: snippet.text.length > 160 ? `${snippet.text.slice(0, 159)}…` : snippet.text,
-      source: snippet.sourceUrl,
-    });
+    if (name) add(name, snippet.text.length > 160 ? `${snippet.text.slice(0, 159)}…` : snippet.text, snippet.sourceUrl);
+  }
+  for (const c of opts.expected) {
+    add(c.name, `${c.required ? "Required to practise. " : ""}${c.note}`.trim(), "model knowledge");
   }
 
-  return out.slice(0, max);
+  return out.slice(0, opts.max ?? 8);
 }
 
 /** Render candidates as the prompt's CANDIDATE CREDENTIALS lines. */
@@ -530,7 +477,8 @@ export function formatCredentialCandidates(cands: CredentialCandidate[]): string
       const level = c.level ?? "n/a";
       const fit = c.levelFit ? ` (${c.levelFit} fit)` : "";
       const prep = c.prepHours ? `${c.prepHours[0]}-${c.prepHours[1]}h` : "prep n/a";
-      const cost = c.examCostUsd != null ? `$${c.examCostUsd}` : "cost n/a";
+      // Catalog costs are US list prices — say so, or the model reads them as local currency.
+      const cost = c.examCostUsd != null ? `US$${c.examCostUsd}` : "cost n/a";
       const extra = c.prereqNote ? ` :: ${c.prereqNote}` : "";
       return `- ${id} :: ${c.name} :: ${level}${fit} :: ${prep} :: ${cost} :: ${c.marketSignal} :: source: ${c.source}${extra}`;
     })

@@ -26,14 +26,14 @@ export interface RoadmapSkeleton {
 
 const SHORT_PHASES: Array<[string, number, string]> = [
   ["Assess & Stabilize", 0.3, "Baseline every target skill, fix the bleeding (weakest 1–2 skills), set the routine."],
-  ["Sharpen", 0.45, "Deliberate practice on the gap skills; one visible artifact (project/cert progress) started."],
+  ["Sharpen", 0.45, "Deliberate practice on the gap skills; one visible proof of competence this field hires on (a portfolio piece, logged hours, credential progress) started."],
   ["Prove", 0.25, "Full mock loops under pressure; convert practice into interview-ready stories and answers."],
 ];
 
 const LONG_PHASES: Array<[string, number, string]> = [
   ["Foundation", 0.25, "Baseline skills, close prerequisite gaps, lock the weekly routine and study system."],
-  ["Build", 0.35, "Deep skill work + certification prep; ship one portfolio-grade artifact."],
-  ["Prove", 0.25, "Mock interviews at full difficulty, cert exam(s) sat, stories quantified and rehearsed."],
+  ["Build", 0.35, "Deep skill work + licence/certification prep; complete one piece of evidence employers in this field actually check."],
+  ["Prove", 0.25, "Mock interviews at full difficulty, required exams sat, stories quantified and rehearsed."],
   ["Land", 0.15, "Applications at volume, targeted networking, company-specific prep, offer handling."],
 ];
 

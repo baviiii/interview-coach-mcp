@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { FieldResearch } from "../adapters/research/index.js";
 import { assembleLearnerContext } from "../context/assemble.js";
+import { resolveFieldProfile } from "../context/field-profile.js";
 import { rankResourcesPrompt, studyPlanPrompt, suggestResourcesPrompt } from "../domain/prompts.js";
 import { drillDifficulty, nextReviewInDays, pickDrillSkill } from "../domain/spaced-repetition.js";
 import { deriveSkillTargets } from "../domain/targets.js";
@@ -267,18 +268,27 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
       }
       if (!focus) reasons.push("no completed interview yet — pathway targets the skill matrix instead of a debrief");
 
-      const research = await researchSafely(deps.research, {
-        field,
-        role: ctx.goal?.targetRole,
-        intents: ["resource", "experience"],
-        max: 4,
-      });
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field,
+          role: ctx.goal?.targetRole,
+          intents: ["resource", "experience"],
+          max: 4,
+        }),
+        // The real field only — never the "their field" placeholder.
+        resolveFieldProfile(horus, args.field ?? ctx.goal?.targetField ?? ctx.targetField ?? ctx.job?.title, {
+          role: ctx.goal?.targetRole,
+          userRef: auth.userId,
+          userToken: auth.jwt,
+        }),
+      ]);
 
       const derived = deriveSkillTargets({
         ctx,
         skills: args.skills ?? focus?.skills,
         field,
         research,
+        profile,
       });
       if (derived.targets.length === 0) {
         return err(

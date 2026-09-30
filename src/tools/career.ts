@@ -2,15 +2,16 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { FieldResearch } from "../adapters/research/index.js";
 import { assembleLearnerContext } from "../context/assemble.js";
+import { resolveFieldProfile } from "../context/field-profile.js";
 import { persistSkillSignals } from "../context/persist.js";
 import {
+  buildCredentialCandidates,
   CERT_CATALOG,
   certStatus,
   formatCredentialCandidates,
   matchCertification,
-  mergeCredentialCandidates,
-  nextCertSuggestions,
 } from "../domain/certifications.js";
+import type { FieldProfile } from "../domain/field-profile.js";
 import {
   careerGuidancePrompt,
   careerRoadmapPrompt,
@@ -49,28 +50,26 @@ export function certFactsBlock(ctx: LearnerContext): string {
 }
 
 /**
- * Build the CANDIDATE CREDENTIALS list for the prompts: curated catalog matches
- * MERGED with credentials researched for the field. The key fix for non-tech
- * fields: when research surfaced real credentials we pass `fallbackToAll: false`
- * so the tech catalog is NOT dumped (a nurse gets NCLEX, not AWS). Catalog stays
- * the fast-path for tech and the offline fallback when research is empty.
+ * Build the CANDIDATE CREDENTIALS list for the prompts: credentials researched
+ * for the field plus the ones its profile says it expects, enriched with catalog
+ * facts where the catalog recognises them. The same path runs for every field,
+ * so a nurse gets NCLEX and a cloud engineer gets AWS, and neither depends on
+ * research happening to succeed.
  */
 function credentialLines(
   ctx: LearnerContext,
   research: FieldResearch,
-  opts: { field?: string; seniority?: string; max?: number },
+  profile: FieldProfile,
+  opts: { seniority?: string; max?: number },
 ): string {
-  const owned = (ctx.certifications ?? []).map((c) => c.catalogId).filter((x): x is string => Boolean(x));
-  const hasResearchedCreds = research.credentials.length > 0;
-  const catalog = nextCertSuggestions({
-    field: opts.field ?? ctx.goal?.targetField ?? ctx.targetField,
+  const candidates = buildCredentialCandidates({
+    researched: research.credentials,
+    expected: profile.credentials,
+    held: ctx.certifications ?? [],
     seniority: opts.seniority ?? ctx.goal?.seniority ?? ctx.targetSeniority,
-    ownedCatalogIds: owned,
-    max: opts.max ?? 6,
-    fallbackToAll: !hasResearchedCreds,
+    max: opts.max ?? 8,
   });
-  const merged = mergeCredentialCandidates(catalog, research.credentials, opts.max ?? 8);
-  return formatCredentialCandidates(merged);
+  return formatCredentialCandidates(candidates);
 }
 
 export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
@@ -193,21 +192,24 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Recommend the next certifications",
       description:
-        "Ranked next-certification plan from a vetted catalog — prioritized for this learner's goal, gaps, budget and weekly study time, with prep plans and ROI. The top pick is backed by a real community source when one exists.",
+        "Ranked next-certification/licence plan for any field — prioritized for this learner's goal, gaps, budget and weekly study time, with prep plans and ROI. The top pick is backed by a real community source when one exists.",
       inputSchema: S.recommendCertificationsInput,
     },
     async (args) => {
       const ctx = await assembleLearnerContext(auth.db, auth.userId, { field: args.targetField });
       const count = args.count ?? 3;
-      const research = await researchSafely(deps.research, {
-        field: args.targetField ?? ctx.goal?.targetField ?? ctx.targetField ?? "their field",
-        role: ctx.goal?.targetRole,
-        seniority: args.seniority,
-        intents: ["credential", "fact"],
-        max: 5,
-      });
-      const candidates = credentialLines(ctx, research, {
-        field: args.targetField,
+      const field = args.targetField ?? ctx.goal?.targetField ?? ctx.targetField;
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field: field ?? "their field",
+          role: ctx.goal?.targetRole,
+          seniority: args.seniority,
+          intents: ["credential", "fact"],
+          max: 5,
+        }),
+        resolveFieldProfile(horus, field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+      ]);
+      const candidates = credentialLines(ctx, research, profile, {
         seniority: args.seniority,
         max: Math.max(count * 2, 6),
       });
@@ -419,7 +421,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Build a career roadmap",
       description:
-        "Week-addressed, phase-structured roadmap to a target role: skill targets from real proficiencies, certification track from the vetted catalog, mock-interview cadence, weekly rhythm and checkable phase exits. Persisted so it can be re-explained later.",
+        "Week-addressed, phase-structured roadmap to a target role in any field: skill targets from real proficiencies, the licences/certifications that field expects, mock-interview cadence, weekly rhythm and checkable phase exits. Persisted so it can be re-explained later.",
       inputSchema: S.buildRoadmapInput,
     },
     async (args) => {
@@ -432,12 +434,16 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           "No target role to build a roadmap toward — pass `targetRole` or set a career goal first (set_career_goal).",
         );
       }
-      const research = await researchSafely(deps.research, {
-        field: args.targetField ?? ctx.goal?.targetField ?? ctx.targetField ?? targetRole,
-        role: targetRole,
-        intents: ["credential", "experience", "fact"],
-        max: 4,
-      });
+      const field = args.targetField ?? ctx.goal?.targetField ?? ctx.targetField ?? targetRole;
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field,
+          role: targetRole,
+          intents: ["credential", "experience", "fact"],
+          max: 4,
+        }),
+        resolveFieldProfile(horus, field, { role: targetRole, userRef: auth.userId, userToken: auth.jwt }),
+      ]);
 
       const skeleton = roadmapSkeleton(args.horizonWeeks ?? 12, args.hoursPerWeek ?? 6);
       const skeletonText = [
@@ -450,7 +456,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         targetRole,
         ctx,
         skeleton: skeletonText,
-        certShortlist: credentialLines(ctx, research, { field: args.targetField, max: 3 }),
+        certShortlist: credentialLines(ctx, research, profile, { max: 3 }),
         certFacts: certFactsBlock(ctx),
         research,
       });

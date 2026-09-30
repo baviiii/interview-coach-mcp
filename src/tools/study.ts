@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { assembleLearnerContext } from "../context/assemble.js";
+import { resolveFieldProfile } from "../context/field-profile.js";
 import { persistSkillSignal, persistSkillSignals } from "../context/persist.js";
 import { drillPrompt, explainConceptPrompt, studyPlanPrompt } from "../domain/prompts.js";
 import {
@@ -58,17 +59,25 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
       }
 
       const field = ctx.goal?.targetField ?? ctx.targetField ?? args.goal ?? "their field";
-      const research = await researchSafely(deps.research, {
-        field,
-        role: ctx.goal?.targetRole,
-        intents: ["resource", "experience"],
-        max: 4,
-      });
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field,
+          role: ctx.goal?.targetRole,
+          intents: ["resource", "experience"],
+          max: 4,
+        }),
+        // The real field only — never the "their field" placeholder.
+        resolveFieldProfile(horus, ctx.goal?.targetField ?? ctx.targetField ?? args.goal, {
+          role: ctx.goal?.targetRole,
+          userRef: auth.userId,
+          userToken: auth.jwt,
+        }),
+      ]);
 
       // Cold start: a learner who hasn't finished an interview has no skill
       // matrix, and hard-erroring here is what made the study plan look broken
       // for every new user. Fall back through goal → field → research instead.
-      const derived = deriveSkillTargets({ ctx, skills: args.skills, field, research });
+      const derived = deriveSkillTargets({ ctx, skills: args.skills, field, research, profile });
       const targetSkills = derived.targets;
       if (targetSkills.length === 0) {
         return err(
@@ -152,7 +161,13 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
       if (!pick) {
         // Nothing tracked yet — drill the field's fundamentals rather than
         // refusing. The result writes back, so the matrix exists after this.
-        const derived = deriveSkillTargets({ ctx, field: args.field });
+        const field = args.field ?? ctx.goal?.targetField ?? ctx.targetField;
+        const profile = await resolveFieldProfile(horus, field, {
+          role: ctx.goal?.targetRole,
+          userRef: auth.userId,
+          userToken: auth.jwt,
+        });
+        const derived = deriveSkillTargets({ ctx, field, profile });
         const first = derived.targets[0];
         if (!first) {
           return err(

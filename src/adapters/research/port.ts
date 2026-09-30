@@ -61,6 +61,9 @@ export interface ResearchRequest {
   role?: string;
   seniority?: string;
   jobDescription?: string;
+  /** Job market (country) to scope locality-sensitive queries — licences,
+   *  courses, role facts. Interview questions stay global for volume. */
+  market?: string;
   /** Which buckets to fill. Omitted ⇒ all of them. Lets a tool fetch only what
    *  it needs (e.g. questions just want "question" + "experience"). */
   intents?: ResearchKind[];

@@ -4,6 +4,7 @@ import type { GroundingPort } from "../adapters/grounding/index.js";
 import type { ModelProvider } from "../adapters/horus/index.js";
 import type { ResearchPort } from "../adapters/research/index.js";
 import { assembleLearnerContext } from "../context/assemble.js";
+import { resolveFieldProfile } from "../context/field-profile.js";
 import { persistSkillSignals, touchPracticePatterns } from "../context/persist.js";
 import { focusSkill, nextDifficulty, shouldOfferHint } from "../domain/adaptive.js";
 import { interviewBlueprint, stageCoverage, type QuestionSlot } from "../domain/interview-loop.js";
@@ -47,8 +48,14 @@ export function registerInterviewTools(server: McpServer, deps: ToolDeps): void 
       const jd = src.type === "paste" ? src.jobDescription : undefined;
 
       const ctx = await assembleLearnerContext(auth.db, auth.userId, { jobId, field: src.field, seniority });
-      // Never assume software: fall back to what the learner actually told us.
-      const field = src.field ?? ctx.goal?.targetField ?? ctx.job?.title ?? "Software Engineering";
+      // Never assume a field: fall back to what the learner actually told us, and
+      // with nothing at all, let the JD (or the model) define the role.
+      const field =
+        src.field ??
+        ctx.goal?.targetField ??
+        ctx.job?.title ??
+        ctx.targetField ??
+        (jd ? "the role in the job description" : "the candidate's target role");
       const research = await researchSafely(deps.research, {
         field,
         role: ctx.goal?.targetRole,
@@ -127,20 +134,24 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         seniority: args.seniority,
       });
       // Research what THIS field actually gets asked / struggles with, first.
-      const research = await researchSafely(deps.research, {
-        field: args.field,
-        role: ctx.goal?.targetRole,
-        seniority: args.seniority,
-        jobDescription: args.jobDescription,
-        intents: ["question", "experience"],
-        max: 4,
-      });
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field: args.field,
+          role: ctx.goal?.targetRole,
+          seniority: args.seniority,
+          jobDescription: args.jobDescription,
+          intents: ["question", "experience"],
+          max: 4,
+        }),
+        resolveFieldProfile(horus, args.field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+      ]);
       const blueprint = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
         questionCount: args.count,
         focusAreas: args.focusAreas,
         ctx,
+        profile,
       });
       const { system, user } = generateQuestionsPrompt({
         blueprint,
@@ -201,20 +212,24 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         field: args.field,
         seniority: args.seniority,
       });
-      const research = await researchSafely(deps.research, {
-        field: args.field,
-        role: ctx.goal?.targetRole,
-        seniority: args.seniority,
-        jobDescription: args.jobDescription,
-        intents: ["question", "experience"],
-        max: 4,
-      });
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field: args.field,
+          role: ctx.goal?.targetRole,
+          seniority: args.seniority,
+          jobDescription: args.jobDescription,
+          intents: ["question", "experience"],
+          max: 4,
+        }),
+        resolveFieldProfile(horus, args.field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+      ]);
       const blueprint = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
         questionCount: args.questionCount ?? 6,
         focusAreas: args.focusAreas,
         ctx,
+        profile,
       });
       const { system, user } = generateQuestionsPrompt({
         blueprint,
@@ -377,6 +392,17 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       const difficulty = nextDifficulty(scores);
       const skill = focusSkill(ctx);
 
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field: args.field,
+          role: ctx.goal?.targetRole,
+          seniority: args.seniority,
+          intents: ["question", "experience"],
+          max: 3,
+        }),
+        resolveFieldProfile(horus, args.field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+      ]);
+
       // Keep following the loop's shape: the slot we'd be on now decides the
       // stage and type, so the adaptive path can't quietly drop the behavioural
       // half of the interview.
@@ -388,17 +414,10 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         questionCount: Math.max(stored.length, transcript.length + 1, 6),
         focusAreas: args.focusAreas,
         ctx,
+        profile,
       });
       const slot: QuestionSlot | undefined =
         blueprint.slots[Math.min(transcript.length, blueprint.slots.length - 1)];
-
-      const research = await researchSafely(deps.research, {
-        field: args.field,
-        role: ctx.goal?.targetRole,
-        seniority: args.seniority,
-        intents: ["question", "experience"],
-        max: 3,
-      });
 
       const last = transcript[transcript.length - 1];
       const { system, user } = nextQuestionPrompt({
@@ -454,18 +473,22 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         readTranscript(auth.db, args.sessionId),
       ]);
 
-      const research = await researchSafely(deps.research, {
-        field: args.field,
-        role: ctx.goal?.targetRole,
-        seniority: args.seniority,
-        intents: ["experience", "question"],
-        max: 3,
-      });
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field: args.field,
+          role: ctx.goal?.targetRole,
+          seniority: args.seniority,
+          intents: ["experience", "question"],
+          max: 3,
+        }),
+        resolveFieldProfile(horus, args.field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+      ]);
       const blueprint = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
         questionCount: Math.max(transcript.length, 6),
         ctx,
+        profile,
       });
 
       const { system, user } = finalEvaluationPrompt({

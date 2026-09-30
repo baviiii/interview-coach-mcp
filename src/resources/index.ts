@@ -90,7 +90,7 @@ export function registerResources(server: McpServer, deps: ToolDeps): void {
     {
       title: "Curated certification catalog",
       description:
-        "The vetted certification catalog (issuer, level, skills vouched for, prep hours, cost, validity, market signal) that grounds all cert advice.",
+        "Reference facts (issuer, level, skills vouched for, prep hours, cost, validity, market signal) for the certifications the catalog knows. Used to enrich cert advice with cost and effort, never to decide what to suggest.",
       mimeType: "application/json",
     },
     async (uri) => ({

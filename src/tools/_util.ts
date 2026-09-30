@@ -7,6 +7,7 @@ import {
   type ResearchPort,
   type ResearchRequest,
 } from "../adapters/research/index.js";
+import { config } from "../config.js";
 
 export function ok(data: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
@@ -19,7 +20,7 @@ export function ok(data: unknown): CallToolResult {
  */
 export async function researchSafely(research: ResearchPort, req: ResearchRequest): Promise<FieldResearch> {
   try {
-    return await research.researchField(req);
+    return await research.researchField({ ...req, market: req.market ?? config.market });
   } catch {
     return emptyResearch(req.field ?? "", req.role, true);
   }

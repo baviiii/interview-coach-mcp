@@ -1,21 +1,29 @@
 /**
- * Pure-unit checks for the career-agnostic research layer (no network, no LLM).
+ * Pure-unit checks for the career-agnostic layer (no network, no LLM).
  * Run: `npm test`. Asserts the behaviors that matter most:
- *   - non-tech fields no longer get the tech catalog dumped on them
- *   - researched credentials merge in WITH their source, catalog keeps its facts
+ *   - no field gets another field's credentials; the catalog never suggests on its own
+ *   - researched credentials keep their source, the catalog only enriches
+ *   - field profiles are validated, and a neutral profile assumes no occupation
+ *   - the interview loop takes its formats from the field, not from software defaults
  *   - research bucketing drops sourceless items, dedupes, and caps
  *   - the REAL-WORLD SIGNALS prompt block renders sources / stays empty when bare
  */
 import assert from "node:assert/strict";
 
 import {
+  buildCredentialCandidates,
   formatCredentialCandidates,
-  mergeCredentialCandidates,
-  nextCertSuggestions,
+  matchCertification,
 } from "../src/domain/certifications.js";
+import { neutralProfile, parseFieldProfile, type FieldProfile } from "../src/domain/field-profile.js";
+import { interviewBlueprint } from "../src/domain/interview-loop.js";
 import { realWorldBlock } from "../src/domain/prompts.js";
+import { deriveSkillTargets } from "../src/domain/targets.js";
+import { withMarket, type InferRequest, type ModelProvider } from "../src/adapters/horus/index.js";
 import { emptyResearch, type ResearchSnippet } from "../src/adapters/research/port.js";
 import { bucketSnippets } from "../src/adapters/research/util.js";
+import { titleFitsField } from "../src/adapters/research/wikipedia-client.js";
+import type { LearnerContext } from "../src/types.js";
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -24,35 +32,77 @@ function check(name: string, fn: () => void) {
   console.log(`  ✓ ${name}`);
 }
 
-console.log("\nresearch layer unit checks:");
+const emptyCtx: LearnerContext = {
+  userId: "test",
+  skills: [],
+  weakSkills: [],
+  strongSkills: [],
+  recentOverallScores: [],
+  certifications: [],
+};
 
-// 1) Non-tech field + researched credentials ⇒ NO tech catalog fallback (the
-//    "AWS for a nurse" bug). With creds present we pass fallbackToAll:false.
-check("non-tech field gets no tech-catalog fallback", () => {
-  const suggestions = nextCertSuggestions({
-    field: "Registered Nurse",
-    ownedCatalogIds: [],
-    fallbackToAll: false,
+const nurse: FieldProfile = {
+  field: "Registered Nurse",
+  technicalWeight: 0.5,
+  keySkills: ["Patient assessment", "Medication safety", "Clinical judgment", "Communication"],
+  domainFormats: ["practical", "case_study", "technical"],
+  credentials: [
+    { name: "NCLEX-RN", required: true, note: "Licensure exam." },
+    { name: "Basic Life Support (BLS)", required: true, note: "" },
+    { name: "RN", required: true, note: "State registration." },
+  ],
+  source: "model",
+};
+
+console.log("\ncareer-agnostic unit checks:");
+
+// 1) The catalog is enrichment only — with nothing researched or expected,
+//    nobody gets its (tech-heavy) contents dumped on them.
+check("catalog never suggests on its own", () => {
+  assert.deepEqual(buildCredentialCandidates({ researched: [], expected: [], held: [] }), []);
+});
+
+// 2) A nurse gets nursing credentials, and none of them is mistaken for a tech cert.
+check("nurse gets nurse credentials, never tech", () => {
+  const c = buildCredentialCandidates({ researched: [], expected: nurse.credentials, held: [] });
+  assert.deepEqual(
+    c.map((x) => x.name),
+    ["NCLEX-RN", "Basic Life Support (BLS)", "RN"],
+  );
+  assert.ok(c.every((x) => x.id === null && x.source === "model knowledge"), "no catalog match for nursing creds");
+  assert.match(c[0]!.marketSignal, /Required to practise/);
+});
+
+// 3) When the field's credential IS in the catalog, its facts fill in.
+check("catalog enriches a credential it recognises", () => {
+  const [c] = buildCredentialCandidates({
+    researched: [],
+    expected: [{ name: "AWS Certified Solutions Architect - Associate", required: false, note: "" }],
+    held: [],
+    seniority: "Mid-Level",
   });
-  assert.equal(suggestions.length, 0, "nurse should get zero catalog certs (no AWS)");
+  assert.equal(c!.id, "aws-saa");
+  assert.equal(c!.examCostUsd, 150);
+  assert.equal(c!.levelFit, "ideal");
+  assert.equal(c!.source, "model knowledge");
 });
 
-// 2) Legacy behavior preserved: with fallback on, an unknown field still yields
-//    catalog certs (so research-off mode doesn't regress).
-check("fallback on still yields catalog certs", () => {
-  const suggestions = nextCertSuggestions({ field: "Registered Nurse", ownedCatalogIds: [] });
-  assert.ok(suggestions.length > 0, "fallback should yield something when research is absent");
+// 4) Held credentials drop out, and prerequisites they satisfy aren't flagged.
+check("held credentials are skipped", () => {
+  const c = buildCredentialCandidates({
+    researched: [],
+    expected: [
+      { name: "AWS Certified Solutions Architect - Associate", required: false, note: "" },
+      { name: "AWS Certified Solutions Architect - Professional", required: false, note: "" },
+    ],
+    held: [{ name: "AWS Solutions Architect Associate", catalogId: "aws-saa" }],
+  });
+  assert.deepEqual(c.map((x) => x.id), ["aws-sap"]);
+  assert.equal(c[0]!.prereqNote, undefined);
 });
 
-// 3) Tech field still matches the catalog directly.
-check("tech field matches catalog", () => {
-  const suggestions = nextCertSuggestions({ field: "DevOps & SRE", ownedCatalogIds: [], fallbackToAll: false });
-  assert.ok(suggestions.length > 0, "DevOps should match catalog certs");
-});
-
-// 4) Merge: catalog entries keep source "catalog"; researched ones carry a URL.
-check("mergeCredentialCandidates marks sources correctly", () => {
-  const catalog = nextCertSuggestions({ field: "DevOps & SRE", ownedCatalogIds: [], max: 2 });
+// 5) Researched credentials come first and keep their URL.
+check("researched credentials keep their source", () => {
   const researched: ResearchSnippet[] = [
     {
       kind: "credential",
@@ -61,16 +111,13 @@ check("mergeCredentialCandidates marks sources correctly", () => {
       sourceLabel: "Wikipedia",
     },
   ];
-  const merged = mergeCredentialCandidates(catalog, researched, 8);
-  const cat = merged.find((c) => c.source === "catalog");
-  const res = merged.find((c) => c.source.startsWith("http"));
-  assert.ok(cat, "should keep a catalog entry");
-  assert.ok(res, "should include a researched credential");
-  assert.equal(res!.name, "National Council Licensure Examination", "name is taken before the colon");
-  assert.equal(res!.id, null, "researched creds have no catalog id");
+  const c = buildCredentialCandidates({ researched, expected: nurse.credentials, held: [] });
+  assert.equal(c[0]!.name, "National Council Licensure Examination", "name is taken before the colon");
+  assert.equal(c[0]!.source, "https://en.wikipedia.org/wiki/NCLEX");
+  assert.equal(c[0]!.id, null);
 });
 
-// 5) Merge skips ramble that doesn't look like a credential NAME.
+// 6) Ramble that doesn't look like a credential NAME is not promoted.
 check("merge skips non-name credential ramble", () => {
   const researched: ResearchSnippet[] = [
     {
@@ -80,17 +127,78 @@ check("merge skips non-name credential ramble", () => {
       sourceLabel: "r/x",
     },
   ];
-  const merged = mergeCredentialCandidates([], researched, 8);
-  assert.equal(merged.length, 0, "rambly forum titles should not become named credentials");
+  assert.equal(buildCredentialCandidates({ researched, expected: [], held: [] }).length, 0);
 });
 
-// 6) formatCredentialCandidates is honest when there is nothing.
+// 7) Catalog matching is whole-word: "RN" used to match inside "kubernetes".
+check("matchCertification matches whole words only", () => {
+  assert.equal(matchCertification("RN"), null);
+  assert.equal(matchCertification("Associate"), null);
+  assert.equal(matchCertification("CKA")?.id, "cka");
+  assert.equal(matchCertification("AWS Solutions Architect Associate")?.id, "aws-saa");
+});
+
+// 8) Profiles are validated field by field; nothing usable ⇒ null (caller goes neutral).
+check("parseFieldProfile validates and clamps", () => {
+  const p = parseFieldProfile("Chef", {
+    keySkills: ["Knife skills", "Food safety", "", 42],
+    technicalWeight: 0.95,
+    domainFormats: ["Practical", "whiteboard", "case study"],
+    credentials: [{ name: "Food Safety Supervisor", required: true, note: "Required in NSW." }, { note: "no name" }],
+  });
+  assert.deepEqual(p!.keySkills, ["Knife skills", "Food safety"]);
+  assert.equal(p!.technicalWeight, 0.8);
+  assert.deepEqual(p!.domainFormats, ["practical", "case_study"]);
+  assert.equal(p!.credentials.length, 1);
+  assert.equal(parseFieldProfile("Chef", "not json"), null);
+  assert.equal(parseFieldProfile("Chef", { technicalWeight: 0.5 }), null);
+});
+
+// 9) The loop's formats come from the field — software formats only when the
+//    field asks for them — and the behavioural floor holds either way.
+check("interview loop formats follow the field", () => {
+  const types = (bp: ReturnType<typeof interviewBlueprint>) => new Set(bp.slots.map((s) => s.type));
+
+  const neutral = interviewBlueprint({ field: "Welder", questionCount: 6 });
+  assert.ok(!types(neutral).has("coding") && !types(neutral).has("system_design"), "neutral assumes no software");
+  assert.equal(neutral.fieldMatched, false);
+
+  const rn = interviewBlueprint({ field: "Registered Nurse", questionCount: 6, profile: nurse });
+  assert.ok(types(rn).has("practical"));
+  assert.ok(!types(rn).has("coding"));
+  assert.deepEqual(rn.keySkills, nurse.keySkills);
+  assert.ok(rn.behavioralCount >= 2);
+
+  const swe = interviewBlueprint({
+    field: "Backend Engineer",
+    questionCount: 6,
+    profile: { ...neutralProfile("Backend Engineer"), keySkills: ["APIs"], domainFormats: ["coding", "system_design"], source: "model" },
+  });
+  assert.ok(types(swe).has("coding"));
+  assert.ok(swe.behavioralCount >= 2);
+});
+
+// 10) Cold-start targets come from the field's profile, and with nothing known
+//     fall back to skills true of every job — never to a tech list.
+check("cold-start targets come from the field", () => {
+  const fromProfile = deriveSkillTargets({ ctx: emptyCtx, field: "Registered Nurse", profile: nurse });
+  assert.equal(fromProfile.source, "field");
+  assert.equal(fromProfile.targets[0]!.skill, "Patient assessment");
+
+  const unknown = deriveSkillTargets({ ctx: emptyCtx, field: "Welder", profile: neutralProfile("Welder") });
+  assert.deepEqual(
+    unknown.targets.map((t) => t.skill),
+    ["Communication", "Problem Solving", "Teamwork", "Adaptability"],
+  );
+});
+
+// 11) formatCredentialCandidates is honest when there is nothing.
 check("empty candidates render an honest line", () => {
   const line = formatCredentialCandidates([]);
   assert.match(line, /do not invent/i);
 });
 
-// 7) bucketSnippets: drops sourceless, dedupes by URL, caps per kind.
+// 12) bucketSnippets: drops sourceless, dedupes by URL, caps per kind.
 check("bucketSnippets hygiene", () => {
   const snippets: ResearchSnippet[] = [
     { kind: "question", text: "Q1", sourceUrl: "https://a", sourceLabel: "r/x" },
@@ -105,7 +213,7 @@ check("bucketSnippets hygiene", () => {
   assert.equal(r.questions[1]!.text, "Q2", "dup URL + sourceless skipped");
 });
 
-// 8) realWorldBlock: empty research ⇒ empty string; populated ⇒ sourced + guardrail.
+// 13) realWorldBlock: empty research ⇒ empty string; populated ⇒ sourced + guardrail.
 check("realWorldBlock renders and guards", () => {
   assert.equal(realWorldBlock(emptyResearch("Nursing")), "", "empty research ⇒ no block");
   const r = emptyResearch("Nursing");
@@ -120,6 +228,34 @@ check("realWorldBlock renders and guards", () => {
   assert.match(block, /REAL-WORLD SIGNALS/);
   assert.match(block, /reddit\.com\/r\/nursing/);
   assert.match(block, /Never invent/i);
+});
+
+// 14) Every model call is scoped to the market, and optional capabilities stay optional.
+check("withMarket scopes every model call", () => {
+  let seen: InferRequest | undefined;
+  const inner: ModelProvider = {
+    infer: async <T>(req: InferRequest) => {
+      seen = req;
+      return { data: {} as T, raw: "{}", model: "fake", cached: false };
+    },
+  };
+  const scoped = withMarket(inner, "Australia");
+  void scoped.infer({ task: "t", system: "You are a coach.", messages: [] });
+  assert.match(seen!.system, /^You are a coach\.\n\nMARKET: Australia\./);
+  assert.match(seen!.system, /states, territories/);
+  assert.equal(scoped.ragSearch, undefined, "no RAG on the inner provider ⇒ none on the wrapper");
+});
+
+// 15) Wikipedia hits must be about the field — these are real results the
+//     unfiltered search returned.
+check("wikipedia keeps only titles about the field", () => {
+  assert.ok(titleFitsField("Nursing in Australia", "Registered Nurse"));
+  assert.ok(titleFitsField("Electrician", "Electrician"));
+  assert.ok(titleFitsField("Software engineer", "Backend Software Engineer"));
+  assert.ok(!titleFitsField("Vehicle registration plates of Germany", "Chef"));
+  assert.ok(!titleFitsField("Solar power in Australia", "Electrician"));
+  assert.ok(!titleFitsField("Microsoft", "Backend Software Engineer"));
+  assert.ok(!titleFitsField("Birth certificate", "Registered Nurse"));
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

@@ -4,7 +4,7 @@ An MCP server that acts as the **brain** behind a career coach — mock intervie
 
 Built for [CareerCraft](https://github.com/) (the web app), but you can run it on its own, plug it into any MCP client (Cursor, Claude Desktop, etc.), or wire it into your own product.
 
-**Scope (honest):** it now works for **any field** — nurse, electrician, teacher, accountant, paralegal, chef — because before generating it **researches the field from free, real sources** (Reddit, Hacker News, Wikipedia) and feeds those *cited* findings into the prompt. So a nurse gets NCLEX/licensure (with source links), not AWS. Tech fields additionally get a curated cert catalog as a fast-path. The one caveat: Reddit's anonymous endpoint is often rate-limited (403) from datacenter IPs — add **free** Reddit app credentials to make it reliable (Wikipedia + HN need nothing). See [Live research](#live-research-grounded-before-generating), [What's hardcoded vs dynamic](#whats-hardcoded-vs-dynamic) and [External sources](#external-sources-whats-actually-connected).
+**Scope (honest):** it now works for **any field** — nurse, electrician, teacher, accountant, paralegal, chef — because before generating it **researches the field from free, real sources** (Reddit, Hacker News, Wikipedia) and feeds those *cited* findings into the prompt. So a nurse gets NCLEX/licensure (with source links), not AWS. Every field — tech included — goes through the same path: a runtime *field profile* decides its question formats, key skills and expected credentials; nothing is special-cased in code. The one caveat: Reddit's anonymous endpoint is often rate-limited (403) from datacenter IPs — add **free** Reddit app credentials to make it reliable (Wikipedia + HN need nothing). See [Live research](#live-research-grounded-before-generating), [What's hardcoded vs dynamic](#whats-hardcoded-vs-dynamic) and [External sources](#external-sources-whats-actually-connected).
 
 ---
 
@@ -50,7 +50,7 @@ Your app or MCP client
 | Term | Meaning |
 |------|---------|
 | **JD** | **Job description** — the text of a job posting (requirements, responsibilities). Paste it into tools or pick a saved job from CareerCraft. This is the main way to prep for a **specific role** (e.g. "ICU nurse" at Hospital X) without relying on hardcoded career paths. |
-| **Field** | Broad career label you pass in, e.g. `"Software Engineering"`, `"Registered Nurse"`. Used in prompts; only a few fields have tailored weights in code (see below). |
+| **Field** | Broad career label you pass in, e.g. `"Software Engineering"`, `"Registered Nurse"`. Every field gets a runtime-generated profile (key skills, question formats, expected credentials) — no field is special-cased in code (see below). |
 | **Research** | Pulling **real, cited material about a field BEFORE generating** — the questions people report, where they struggled, the licenses/certs the field expects, the courses the community recommends — from free sources, and feeding it into the prompt. This is what makes the coach career-agnostic. |
 | **Grounding** | Attaching a **real URL** (HN thread, Reddit post) to a tip the AI already wrote — or flagging it `unverified`. The *after-the-fact* complement to Research's *before-the-fact* sourcing. |
 
@@ -154,13 +154,22 @@ Not everything comes from the web or the DB. Here's the split:
 
 | File | What's fixed |
 |------|----------------|
-| `domain/career-paths.ts` | **4 career fields** + a generic default (Software Eng, DevOps/SRE, Data Science/ML, Product Management). Anything else → field-neutral default weights (universal soft skills); real focus now comes from research. |
-| `domain/certifications.ts` | **~25 certs** (AWS, Azure, K8s, PMP, …) — now a **fast-path/fallback, no longer the ceiling**. Cert tools merge this with credentials *researched* for the field (each with a source), and the tech catalog is **not** dumped on non-tech fields. |
-| `domain/taxonomy.ts` | Skill names and question types used in prompts |
+| `domain/field-profile.ts` | **No occupation is named in code.** Only the field-independent rules: the question formats the rubric can score (technical, practical, case study, coding, system design) and how seniority shifts weight from craft depth to leadership. What each field actually needs comes from its *field profile* (see below). |
+| `domain/certifications.ts` | **~25 certs** (AWS, Azure, K8s, PMP, …) used as a **lookup table only** — it fills in cost, prep hours and level when a suggested credential matches, but never suggests anything itself, so its tech bias can't reach other fields. |
 | `domain/roadmap.ts` | Phase structure for roadmaps (Assess → Sharpen → Prove, etc.) |
 | `domain/interview-loop.ts` | Mock-interview stage structure (warmup → domain → behavioral → situational → closing) and the behavioural floor |
-| `domain/targets.ts` | Cold-start fallback chain for skill targets (debrief → matrix → goal → field → research) |
+| `domain/targets.ts` | Cold-start fallback chain for skill targets (debrief → matrix → field profile → research → universal fundamentals) |
 | `domain/prompts.ts` | Prompt templates, the cliché ban list, and the per-question-type evaluation rubrics |
+
+### Field profiles (per field, generated at runtime)
+
+The first time a field is seen, one fast model call describes how that field hires: its key skills, how
+technical its interviews are, which question formats it uses, and the licences/certifications it expects.
+`parseFieldProfile` validates and clamps the answer, and `context/field-profile.ts` caches it for 24 hours
+per server instance. A nurse gets practical and case-study questions plus RN/BLS/ACLS; a backend engineer
+gets coding and system design plus AWS/CKA (with catalog cost data). If the call fails, the field gets a
+**neutral** profile (balanced weights, formats any job can answer, no assumed skills), never software defaults.
+Credentials from a profile are labelled `model knowledge` so the advice tells the learner to confirm them with the issuing body.
 
 ### Dynamic (changes per user / input)
 
@@ -173,7 +182,7 @@ Not everything comes from the web or the DB. Here's the split:
 | **Research (Reddit/HN/Wikipedia/RAG)** | Real, cited field material fetched at runtime **before** generation — questions, pain points, credentials, resources, facts. This is the career-agnostic engine. |
 | **Grounding (HN/Reddit)** | Links searched at runtime — proof attached to tips *after* the AI writes them |
 
-**Interview prep for a nurse or mechanical engineer:** just pass `field` (a JD still helps). Questions, tips, **cert/roadmap, and resource tools now research the field first** (free) and ground on what they find — credentials come from Wikipedia/Reddit with source links, not the tech catalog. Quality scales with what the free sources return for that field (and with Reddit creds set, per [Live research](#live-research-grounded-before-generating)).
+**Interview prep for a nurse or mechanical engineer:** just pass `field` (a JD still helps). Questions, tips, **cert/roadmap, and resource tools now research the field first** (free) and ground on what they find — credentials come from Wikipedia/Reddit with source links plus the field profile, never from the tech catalog. Research quality scales with what the free sources return for that field (and with Reddit creds set, per [Live research](#live-research-grounded-before-generating)).
 
 ---
 
@@ -239,6 +248,7 @@ cp .env.example .env
 | `GROUNDING_MODE=hn` | Real Hacker News proof links |
 | `GROUNDING_MODE=reddit` | Real Reddit proof links |
 | `GROUNDING_MODE=mock` | Fake proof sources |
+| `MARKET=Australia` | The country learners are job-hunting in (default `Australia`). Every model call is told to use its regulators, licensing, qualification framework, spelling and currency, and to flag state/territory differences; licence, course and role-fact research is scoped to it first |
 | `RESEARCH_MODE=auto` | **Live field research** (free): Reddit + HN + Wikipedia + your RAG — the default |
 | `RESEARCH_MODE=reddit` / `mock` / `off` | Reddit only / offline canned / disabled |
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Free Reddit app creds → reliable Reddit research (anonymous often 403s) |
@@ -341,7 +351,7 @@ src/
 ├── server/build-server.ts ← registers tools per request
 ├── tools/                 ← interview, career, study, profile, proof, analytics, learning
 ├── context/               ← assemble.ts (read profile), persist.ts (write skills/patterns)
-├── domain/                ← prompts, adaptive, certs, roadmap, taxonomy (much of this is hardcoded)
+├── domain/                ← prompts, field profiles, adaptive, certs, roadmap (field-independent rules)
 ├── adapters/
 │   ├── horus/             ← ModelProvider (mock / gateway / http)
 │   ├── grounding/         ← GroundingPort (mock / hn / reddit / http) — proof AFTER

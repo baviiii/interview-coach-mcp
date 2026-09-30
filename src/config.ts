@@ -13,6 +13,10 @@ function opt(name: string, fallback?: string): string | undefined {
 export const config = {
   port: Number(opt("PORT", "8787")),
   corsOrigin: opt("CORS_ORIGIN", "*")!,
+  // The job market learners are in. Every model call and every locality-sensitive
+  // research query is scoped to it, so a nurse gets that country's registration
+  // body and licences rather than whichever country the model defaults to.
+  market: opt("MARKET", "Australia")!,
 
   supabase: {
     url: opt("SUPABASE_URL"),

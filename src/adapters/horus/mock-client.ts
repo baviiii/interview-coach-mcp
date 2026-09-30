@@ -318,7 +318,7 @@ function mockFor(task: string): unknown {
       return {
         drill: {
           skill: "System Design",
-          type: "whiteboard",
+          type: "hands_on",
           prompt: "(mock) Design a rate limiter for a public API: state your assumptions, pick an algorithm, and explain where the state lives.",
           difficulty: "medium",
           timeboxMinutes: 15,
@@ -433,6 +433,16 @@ function mockFor(task: string): unknown {
           { day: "Sat", block: "(mock) Mock + review", minutes: 90 },
         ],
         riskFactors: [{ risk: "(mock) Streak collapse under work pressure", mitigation: "(mock) Minimum viable day = one 10-minute drill." }],
+      };
+
+    // Deliberately field-neutral: offline mode must not smuggle one occupation's
+    // assumptions into every other one.
+    case "field.profile":
+      return {
+        keySkills: ["(mock) Core craft knowledge", "(mock) Judgment under pressure", "Communication", "Teamwork"],
+        technicalWeight: 0.55,
+        domainFormats: ["technical", "practical", "case_study"],
+        credentials: [{ name: "(mock) Field licence", required: true, note: "(mock) Issued by the field's regulator." }],
       };
 
     case "interview.hint":

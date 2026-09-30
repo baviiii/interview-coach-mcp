@@ -9,7 +9,7 @@
  * behavioral question at all. Slots make that impossible.
  */
 
-import { resolveCareerPath, getSeniorityModifier } from "./career-paths.js";
+import { neutralProfile, seniorityWeights, type FieldProfile } from "./field-profile.js";
 import type { Difficulty } from "./taxonomy.js";
 import type { LearnerContext } from "../types.js";
 
@@ -19,7 +19,7 @@ export interface QuestionSlot {
   /** 1-based position in the loop — also the question `id` the model must use. */
   index: number;
   stage: InterviewStage;
-  /** One of taxonomy.QUESTION_TYPES. */
+  /** "behavioral", "situational", or one of the field profile's domain formats. */
   type: string;
   difficulty: Difficulty;
   /** The learner's real skill this slot exists to probe, when we know one. */
@@ -31,11 +31,14 @@ export interface QuestionSlot {
 export interface InterviewBlueprint {
   field: string;
   seniority: string;
-  /** False when the field didn't match a tuned career path — callers then omit
-   *  generic key-skill guidance instead of asserting it. */
+  /** False when no field profile could be derived — callers then omit key-skill
+   *  guidance instead of asserting it. */
   fieldMatched: boolean;
-  /** Empty when the field is unknown to us. */
+  /** Empty when the field profile is neutral. */
   keySkills: string[];
+  /** Seniority-driven emphasis, 0-1. */
+  depth: number;
+  leadership: number;
   slots: QuestionSlot[];
   behavioralCount: number;
 }
@@ -67,16 +70,6 @@ function rampDifficulty(position: number, total: number, seniority: string): Dif
   return "hard";
 }
 
-/** Domain question types appropriate to the field. */
-function domainTypes(fieldMatched: boolean, keySkills: string[]): string[] {
-  if (!fieldMatched) return ["technical", "case_study"];
-  const isSoftware = keySkills.some((s) => /data structures|algorithms/i.test(s));
-  const isSystems = keySkills.some((s) => /system design|cloud/i.test(s));
-  if (isSoftware) return ["technical", "coding", "system_design"];
-  if (isSystems) return ["technical", "system_design", "case_study"];
-  return ["technical", "case_study"];
-}
-
 /**
  * Skills to probe, weakest first: the learner's real matrix, then anything the
  * round asked for, then the field's key skills. Behavioral slots prefer skills
@@ -101,14 +94,17 @@ export interface BlueprintArgs {
   questionCount?: number;
   focusAreas?: string[];
   ctx?: LearnerContext;
+  /** How this field hires (context/field-profile.ts). Neutral when absent. */
+  profile?: FieldProfile;
 }
 
 export function interviewBlueprint(args: BlueprintArgs): InterviewBlueprint {
   const count = Math.min(Math.max(args.questionCount ?? 6, 1), 10);
   const seniority = args.seniority ?? "Mid-Level";
-  const { path, matched } = resolveCareerPath(args.field);
-  const mod = getSeniorityModifier(path, seniority);
-  const keySkills = matched ? path.keySkills : [];
+  const profile = args.profile ?? neutralProfile(args.field);
+  const matched = profile.source === "model" && profile.keySkills.length > 0;
+  const mod = seniorityWeights(seniority);
+  const keySkills = matched ? profile.keySkills : [];
   const focusAreas = args.focusAreas ?? [];
 
   // Slot budget. Warmup/closing/situational are only affordable in a real loop;
@@ -121,14 +117,14 @@ export function interviewBlueprint(args: BlueprintArgs): InterviewBlueprint {
   // The behavioral floor is the point of this file: a full loop ALWAYS carries
   // at least two behavioural questions, whatever the field's technical bias.
   const floor = count >= 4 ? 2 : 1;
-  const weighted = Math.round(core * (path.behavioralWeight + mod.leadershipFocus * 0.15));
+  const weighted = Math.round(core * (1 - profile.technicalWeight + mod.leadership * 0.15));
   let behavioral = Math.max(0, Math.min(core - 1, Math.max(floor, weighted)));
   if (core === 1 && /behavioral/i.test(args.ctx?.patterns?.weakestQuestionType ?? "")) behavioral = 1;
   const domain = core - behavioral;
 
   const behavioralSkills = skillPool(args.ctx, focusAreas, keySkills, true);
   const domainSkills = skillPool(args.ctx, focusAreas, keySkills, false);
-  const types = domainTypes(matched, path.keySkills);
+  const types = profile.domainFormats;
 
   // Order: warmup → alternate domain/behavioral → situational → closing.
   const middle: InterviewStage[] = [];
@@ -180,6 +176,8 @@ export function interviewBlueprint(args: BlueprintArgs): InterviewBlueprint {
     seniority,
     fieldMatched: matched,
     keySkills,
+    depth: mod.depth,
+    leadership: mod.leadership,
     slots,
     behavioralCount: slots.filter((s) => s.stage === "behavioral").length,
   };

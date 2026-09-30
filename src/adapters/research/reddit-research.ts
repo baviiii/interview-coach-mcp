@@ -13,11 +13,14 @@ import { fmtCount, truncate } from "./util.js";
 
 type RedditIntent = Exclude<ResearchKind, "fact">;
 
-const QUERIES: Record<RedditIntent, (field: string, role?: string) => string> = {
+// Credentials and courses are local (licensing bodies, providers), so those are
+// scoped to the market; interview questions are broadly shared, and scoping them
+// would cost most of the results.
+const QUERIES: Record<RedditIntent, (field: string, role?: string, market?: string) => string> = {
   question: (f, r) => `${r ?? f} interview questions`,
   experience: (f, r) => `${r ?? f} interview experience struggled OR failed OR mistake`,
-  credential: (f) => `${f} certification OR license OR exam worth it`,
-  resource: (f) => `best ${f} course OR book OR study resource`,
+  credential: (f, _r, m) => `${f} ${m ?? ""} certification OR license OR licence OR registration`.replace(/\s+/g, " "),
+  resource: (f, _r, m) => `best ${f} course OR book OR study resource ${m ?? ""}`.trim(),
 };
 
 const ALL_INTENTS: RedditIntent[] = ["question", "experience", "credential", "resource"];
@@ -31,7 +34,7 @@ export class RedditResearchSource implements ResearchSource {
 
     const lists = await Promise.all(
       intents.map(async (kind) => {
-        const posts = await searchReddit(QUERIES[kind](req.field, req.role), perQuery + 3);
+        const posts = await searchReddit(QUERIES[kind](req.field, req.role, req.market), perQuery + 3);
         return posts
           .filter((p) => (p.ups ?? 0) >= 5)
           .slice(0, perQuery)

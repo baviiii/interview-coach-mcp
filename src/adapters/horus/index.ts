@@ -2,7 +2,7 @@ import { config } from "../../config.js";
 import { GatewayModelProvider } from "./gateway-client.js";
 import { HttpHorusClient } from "./http-client.js";
 import { MockHorusClient } from "./mock-client.js";
-import type { ModelProvider } from "./port.js";
+import type { InferRequest, ModelProvider } from "./port.js";
 
 export * from "./port.js";
 
@@ -42,7 +42,22 @@ export function getModelProvider(): ModelProvider {
   } else {
     singleton = new MockHorusClient();
   }
+  singleton = withMarket(singleton, config.market);
   return singleton;
+}
+
+/**
+ * Scopes every model call to the learner's job market. Applied here, once,
+ * rather than in each prompt, so no prompt — present or future — can forget it
+ * and quietly fall back to the model's default country.
+ */
+export function withMarket(provider: ModelProvider, market: string): ModelProvider {
+  const note = `\n\nMARKET: ${market}. The learner is working or job-hunting in ${market}. Use ${market}'s credentials, regulators and licensing bodies, qualification framework, employers, terminology, spelling and hiring norms — never another country's by default. Where a requirement differs between states, territories or regions within ${market}, say so instead of picking one. Quote costs in ${market}'s currency when you state them.`;
+  return {
+    infer: <T>(req: InferRequest) => provider.infer<T>({ ...req, system: `${req.system}${note}` }),
+    ragSearch: provider.ragSearch?.bind(provider),
+    graphQuery: provider.graphQuery?.bind(provider),
+  };
 }
 
 /** @deprecated use {@link getModelProvider}. */

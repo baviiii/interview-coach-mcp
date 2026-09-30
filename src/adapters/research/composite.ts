@@ -35,7 +35,7 @@ export class CompositeResearch implements ResearchPort {
 
 function cacheKey(req: ResearchRequest): string {
   const intents = (req.intents ?? []).slice().sort().join(",");
-  return [req.field, req.role ?? "", req.seniority ?? "", intents, req.max ?? ""]
+  return [req.field, req.role ?? "", req.seniority ?? "", req.market ?? "", intents, req.max ?? ""]
     .map((p) => String(p).toLowerCase())
     .join("|");
 }
