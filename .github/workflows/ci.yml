@@ -17,3 +17,67 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run e2e
+
+  # Every push to main that passes the checks ships to Azure Container Apps.
+  #
+  # Azure access is keyless: GitHub mints a short-lived OIDC token and Azure
+  # trades it for the deploy identity (id-gh-interview-coach-mcp-deploy), whose
+  # federated credential only accepts repo:baviiii/interview-coach-mcp on
+  # refs/heads/main. Forks, PRs and other branches can't obtain a token even if
+  # this `if` were edited, and there is no stored password to leak.
+  deploy:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    # One rollout at a time, in push order; never cancel one halfway.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      RESOURCE_GROUP: rg-horus-dev
+      APP: interview-coach-mcp
+      REGISTRY: horusmcpacr
+      IMAGE: interview-coach-mcp:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Built inside ACR, tagged with the commit, so every revision traces back to one.
+      - name: Build image
+        run: az acr build --registry "$REGISTRY" --image "$IMAGE" .
+
+      - name: Roll out new revision
+        run: |
+          az extension add --name containerapp --upgrade --only-show-errors
+          az containerapp update -n "$APP" -g "$RESOURCE_GROUP" \
+            --image "$REGISTRY.azurecr.io/$IMAGE" --only-show-errors -o none
+
+      # Fail the run unless the new revision comes up healthy and serves /health.
+      # A failed revision gets no traffic, so the previous one keeps serving.
+      - name: Verify rollout
+        run: |
+          revision=$(az containerapp show -n "$APP" -g "$RESOURCE_GROUP" --query properties.latestRevisionName -o tsv)
+          fqdn=$(az containerapp show -n "$APP" -g "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Waiting for $revision"
+          for _ in $(seq 1 30); do
+            state=$(az containerapp revision show -n "$APP" -g "$RESOURCE_GROUP" --revision "$revision" \
+              --query "[properties.healthState, properties.runningState]" -o tsv | paste -sd/ -)
+            echo "  $state"
+            case "$state" in
+              Healthy/*) break ;;
+              Unhealthy/*|*/Failed) echo "::error::Revision $revision is $state"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          [[ "$state" == Healthy/* ]] || { echo "::error::Revision $revision not healthy after 5 minutes"; exit 1; }
+          curl -fsS --max-time 60 "https://$fqdn/health"
+          echo
+          echo "Deployed ${GITHUB_SHA::7} as $revision"
