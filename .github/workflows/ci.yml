@@ -17,6 +17,24 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run e2e
+      - run: npm run build
+
+      # The deploy ships this Dockerfile, so prove the image actually starts on
+      # every push — a broken build or start command then never reaches main.
+      - name: Image boots
+        run: |
+          docker build -t mcp:ci .
+          start=$(date +%s%N)
+          docker run -d --name mcp -p 8787:8787 -e HORUS_MODE=mock -e RESEARCH_MODE=mock -e GROUNDING_MODE=mock mcp:ci
+          for _ in $(seq 1 60); do
+            if curl -fsS localhost:8787/health > /dev/null 2>&1; then
+              echo "Healthy $(( ($(date +%s%N) - start) / 1000000 ))ms after start"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          docker logs mcp
+          exit 1
 
   # Every push to main that passes the checks ships to Azure Container Apps.
   #

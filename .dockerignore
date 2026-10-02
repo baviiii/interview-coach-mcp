@@ -8,3 +8,4 @@ node_modules
 scripts
 Dockerfile
 .dockerignore
+dist

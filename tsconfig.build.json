@@ -1,0 +1,15 @@
+{
+  // Production build: emit plain ESM JavaScript for `node dist/server.js`.
+  // NodeNext resolution makes a missing `.js` import extension a compile error
+  // here rather than a crash on the first cold start.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "sourceMap": true
+  },
+  "include": ["src/**/*.ts"]
+}
