@@ -44,11 +44,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Identifiers, not credentials: they name the identity, and only a token
+      # from this repo's main branch can act as it.
       - uses: azure/login@v2
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: 094e53e3-a036-4097-8ca7-6e5eef44d74b
+          tenant-id: 5ac8a897-d083-4f84-9021-6df508fc084b
+          subscription-id: 46ee1213-0d0f-4d43-978d-1d3ec5ff85ee
 
       # Built inside ACR, tagged with the commit, so every revision traces back to one.
       - name: Build image
