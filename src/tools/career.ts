@@ -11,7 +11,7 @@ import {
   formatCredentialCandidates,
   matchCertification,
 } from "../domain/certifications.js";
-import type { FieldProfile } from "../domain/field-profile.js";
+import { describeInterviewStyle, type FieldProfile } from "../domain/field-profile.js";
 import { withTargetTitleFirst } from "../domain/goal.js";
 import {
   careerGuidancePrompt,
@@ -430,6 +430,32 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           targetRole: args.targetRole ? rolePersisted : null,
           profile: profilePersisted,
         },
+      });
+    },
+  );
+
+  // ── describe_field ──────────────────────────────────────────────────────
+  server.registerTool(
+    "describe_field",
+    {
+      title: "Describe a job",
+      description:
+        "Turns what a learner typed ('sparky', 'nurse icu') into the standard job title, what its interviews focus on, the licences it expects in this market and what each career stage is called — for confirming a role before saving it. known=false means it isn't a recognisable job, and nothing about it is invented.",
+      inputSchema: S.describeFieldInput,
+    },
+    async (args) => {
+      const profile = await resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt });
+      const known = profile.source === "model";
+      return ok({
+        input: args.field,
+        known,
+        canonicalTitle: profile.canonicalTitle,
+        interviewStyle: known ? describeInterviewStyle(profile) : null,
+        keySkills: profile.keySkills,
+        credentials: [...profile.credentials]
+          .sort((a, b) => Number(b.required) - Number(a.required))
+          .map((c) => ({ ...c, source: "model knowledge — confirm with the issuing body" })),
+        levels: profile.levels,
       });
     },
   );

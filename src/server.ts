@@ -112,6 +112,7 @@ app.post("/api/analytics/weekly", rest("weekly_insight"));
 app.post("/api/career/guidance", rest("career_guidance"));
 app.post("/api/career/roadmap", rest("build_career_roadmap"));
 app.post("/api/career/goal", rest("set_career_goal"));
+app.post("/api/career/field-preview", rest("describe_field"));
 app.post("/api/career/profile", rest("get_career_profile"));
 app.post("/api/career/persona/refresh", rest("refresh_persona"));
 app.post("/api/career/certifications/analyze", rest("analyze_certifications"));

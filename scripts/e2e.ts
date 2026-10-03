@@ -177,6 +177,13 @@ async function main() {
     if (!pathway._meta?.degraded) fail("pathway must report its degraded state");
     console.log(`✓ learning pathway (${p.targets.length} targets, ${p.resources.length} resources)`);
 
+    // Smart enter: what someone typed comes back as a job they can confirm.
+    const preview = await mustPost("/api/career/field-preview", { field: "sparky" });
+    if (!preview.known || !preview.canonicalTitle || !preview.interviewStyle) {
+      fail(`field preview incomplete: ${JSON.stringify(preview)}`);
+    }
+    console.log(`✓ field preview ("sparky" → ${preview.canonicalTitle}, ${Object.keys(preview.levels).length} stage names)`);
+
     // The cost guard actually guards: hammer until 429.
     let tripped = false;
     for (let i = 0; i < RATE_MAX + 5; i++) {

@@ -153,6 +153,10 @@ export const setCareerGoalInput = {
   interviewTypes: z.array(z.string().max(50)).max(10).optional(),
 };
 
+export const describeFieldInput = {
+  field: z.string().min(1).max(100),
+};
+
 export const buildRoadmapInput = {
   // Optional: the tool falls back to the learner's stated goal / target job, so
   // the UI doesn't have to re-ask for something they already told us.

@@ -439,6 +439,9 @@ function mockFor(task: string): unknown {
     // assumptions into every other one.
     case "field.profile":
       return {
+        isOccupation: true,
+        canonicalTitle: "(mock) Field Specialist",
+        levels: { entry: "(mock) Trainee", mid: "(mock) Qualified", senior: "(mock) Senior" },
         keySkills: ["(mock) Core craft knowledge", "(mock) Judgment under pressure", "Communication", "Teamwork"],
         technicalWeight: 0.55,
         domainFormats: ["technical", "practical", "case_study"],

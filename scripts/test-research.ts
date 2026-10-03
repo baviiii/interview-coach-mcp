@@ -15,7 +15,13 @@ import {
   formatCredentialCandidates,
   matchCertification,
 } from "../src/domain/certifications.js";
-import { neutralProfile, parseFieldProfile, seniorityBand, type FieldProfile } from "../src/domain/field-profile.js";
+import {
+  describeInterviewStyle,
+  neutralProfile,
+  parseFieldProfile,
+  seniorityBand,
+  type FieldProfile,
+} from "../src/domain/field-profile.js";
 import { resolveGoal, withTargetTitleFirst } from "../src/domain/goal.js";
 import { interviewBlueprint } from "../src/domain/interview-loop.js";
 import { realWorldBlock } from "../src/domain/prompts.js";
@@ -44,6 +50,8 @@ const emptyCtx: LearnerContext = {
 
 const nurse: FieldProfile = {
   field: "Registered Nurse",
+  canonicalTitle: "Registered Nurse",
+  levels: { entry: "Graduate nurse" },
   technicalWeight: 0.5,
   keySkills: ["Patient assessment", "Medication safety", "Clinical judgment", "Communication"],
   domainFormats: ["practical", "case_study", "technical"],
@@ -305,6 +313,52 @@ check("seniority words from every source are understood", () => {
   }
   // "vp" must not fire inside an ordinary word.
   assert.equal(seniorityBand("mvp builder"), "mid");
+});
+
+// 18) Smart enter: standard title + stage names, and gibberish never gets a profile.
+check("profiles carry a standard title and stage names", () => {
+  const p = parseFieldProfile("sparky", {
+    isOccupation: true,
+    canonicalTitle: "Electrician",
+    levels: { entry: "Apprentice", mid: "Qualified electrician", lead: "Leading hand", wizard: "nope", vp: "" },
+    keySkills: ["Wiring"],
+    domainFormats: ["practical"],
+  });
+  assert.equal(p!.canonicalTitle, "Electrician");
+  assert.deepEqual(p!.levels, { entry: "Apprentice", mid: "Qualified electrician", lead: "Leading hand" });
+  assert.equal(parseFieldProfile("Chef", { keySkills: ["Knife skills"] })!.canonicalTitle, "Chef", "falls back to the input");
+});
+
+check("non-jobs get the neutral profile, marked as an answer", () => {
+  const p = parseFieldProfile("asdf", { isOccupation: false, canonicalTitle: "ASDF Engineer", keySkills: ["x"], credentials: [{ name: "Fake" }] });
+  assert.equal(p!.source, "neutral");
+  assert.equal(p!.notOccupation, true);
+  assert.equal(p!.canonicalTitle, "asdf", "no invented title");
+  assert.deepEqual(p!.credentials, [], "no invented credentials");
+});
+
+// Real shapes the live model returned: booleans as strings, placeholder stages.
+check("string booleans and placeholder stages are handled", () => {
+  const notJob = parseFieldProfile("asdf qwerty", { isOccupation: "false", keySkills: ["x"], domainFormats: ["technical"] });
+  assert.equal(notJob!.notOccupation, true, '"false" as a string still means not a job');
+  const p = parseFieldProfile("sparky", {
+    isOccupation: "true",
+    canonicalTitle: "Electrician",
+    levels: { entry: "Apprentice", vp: "Not applicable", "c-level": "N/A", director: "none" },
+    keySkills: ["Wiring"],
+    credentials: [{ name: "Electrician's Licence", required: "true" }, { name: "Test and Tag", required: "false" }],
+  });
+  assert.equal(p!.source, "model");
+  assert.deepEqual(p!.levels, { entry: "Apprentice" });
+  assert.deepEqual(p!.credentials.map((c) => c.required), [true, false]);
+});
+
+check("interview style reads from the profile", () => {
+  assert.equal(
+    describeInterviewStyle({ ...nurse, technicalWeight: 0.7, domainFormats: ["practical", "case_study"] }),
+    "Interviews focus mostly on the craft, through hands-on 'walk me through it' tasks and realistic scenarios.",
+  );
+  assert.match(describeInterviewStyle({ ...nurse, technicalWeight: 0.3 }), /^Interviews focus mostly on how you work with people/);
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

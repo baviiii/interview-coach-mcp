@@ -37,7 +37,8 @@ export async function resolveFieldProfile(
 
   // Cache the promise, not the result, so concurrent tools share one call.
   const val = derive(horus, name, opts).then((profile) => {
-    if (profile.source === "neutral") cache.delete(key);
+    // A failed lookup is retried next time; "that isn't a job" is an answer, and is kept.
+    if (profile.source === "neutral" && !profile.notOccupation) cache.delete(key);
     return profile;
   });
   if (cache.size >= MAX_ENTRIES) cache.delete(cache.keys().next().value!);

@@ -5,7 +5,7 @@
  */
 
 import { researchIsEmpty, type FieldResearch, type ResearchKind, type ResearchSnippet } from "../adapters/research/port.js";
-import { DOMAIN_FORMATS, FORMAT_GUIDE } from "./field-profile.js";
+import { DOMAIN_FORMATS, FORMAT_GUIDE, STORED_LEVELS } from "./field-profile.js";
 import { blueprintText, type InterviewBlueprint, type InterviewStage } from "./interview-loop.js";
 import type { LearnerContext } from "../types.js";
 
@@ -801,13 +801,19 @@ confidence 0-1 reflecting how much real signal exists. List basedOn honestly —
 export function fieldProfilePrompt(args: { field: string; role?: string }): PromptPair {
   const system = `You are a labour-market analyst who knows how hiring actually works in EVERY occupation — trades, healthcare, hospitality, law, finance, education, government, tech and everything between. Describe how employers in the given field interview and what they screen for. Be concrete to this field; do not default to software or corporate-office assumptions unless the field is one.
 
+The field is typed by a learner, so it may be slang, misspelt or vague ("sparky", "nurse icu", "chippy").
+
 Return ONLY JSON:
 {
+  "isOccupation": "boolean — false if the input is not a recognisable job or field of work (gibberish, a company name, a hobby); then the other keys don't matter",
+  "canonicalTitle": "the standard job title for what they typed, as employers advertise it ('sparky' → 'Electrician', 'nurse icu' → 'Intensive Care Nurse'); repeat their words if already standard",
+  "levels": { ${STORED_LEVELS.map((l) => `"${l}": "what this stage is called in this field"`).join(", ")} },
   "keySkills": ["4-6 core competencies interviews in this field test, in the field's own vocabulary"],
   "technicalWeight": "number 0.2-0.8 — the share of a typical interview spent on craft knowledge rather than behaviour",
   "domainFormats": ["which of ${DOMAIN_FORMATS.join(" | ")} this field's interviews really use, most typical first — only include coding or system_design if candidates are genuinely asked to write code or design software"],
-  "credentials": [{ "name": "exact licence/certification name", "required": "true if needed to legally or practically work in the field", "note": "one line on who issues it and when it matters" }]
+  "credentials": [{ "name": "exact licence/certification name", "required": "boolean — true if needed to legally or practically work in the field", "note": "one line on who issues it and when it matters" }]
 }
+For "levels", use 1-4 words each, as people in this field say them (an electrician's entry stage is "Apprentice", a nurse's is "Graduate nurse"), and leave out stages this field doesn't really have.
 List at most 6 credentials, and only real ones you are confident exist. Credentials means licences, registrations and certifications — never degrees or diplomas of general education. If the field has none that matter, return an empty list.`;
 
   const user = `FIELD: ${args.field}${args.role ? `\nTARGET ROLE: ${args.role}` : ""}`;
