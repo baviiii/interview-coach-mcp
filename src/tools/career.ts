@@ -12,6 +12,7 @@ import {
   matchCertification,
 } from "../domain/certifications.js";
 import type { FieldProfile } from "../domain/field-profile.js";
+import { withTargetTitleFirst } from "../domain/goal.js";
 import {
   careerGuidancePrompt,
   careerRoadmapPrompt,
@@ -402,6 +403,20 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         }
       }
 
+      // The profile's target titles are the source of truth the web app and
+      // assemble both read, so the new goal goes first there too.
+      let profilePersisted = false;
+      try {
+        const { data } = await auth.db.from("profiles").select("target_job_titles").eq("id", auth.userId).maybeSingle();
+        const { error } = await auth.db
+          .from("profiles")
+          .update({ target_job_titles: withTargetTitleFirst(data?.target_job_titles, args.targetRole ?? args.targetField) })
+          .eq("id", auth.userId);
+        profilePersisted = !error;
+      } catch {
+        /* best-effort */
+      }
+
       return ok({
         goal: {
           targetField: args.targetField,
@@ -410,7 +425,11 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           jobRoleType: args.jobRoleType ?? null,
           interviewTypes: args.interviewTypes ?? null,
         },
-        persisted: { preferences: preferencesPersisted, targetRole: args.targetRole ? rolePersisted : null },
+        persisted: {
+          preferences: preferencesPersisted,
+          targetRole: args.targetRole ? rolePersisted : null,
+          profile: profilePersisted,
+        },
       });
     },
   );

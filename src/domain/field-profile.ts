@@ -116,15 +116,32 @@ export function parseFieldProfile(field: string, raw: unknown): FieldProfile | n
   };
 }
 
+export type SeniorityBand = "junior" | "mid" | "senior" | "lead" | "manager";
+
+/**
+ * The one reading of seniority every rule shares. Accepts the profile's stored
+ * levels (entry … c-level), onboarding's persona levels (student … exec) and
+ * free text, so "c-level" or "student" no longer fall through to mid-level.
+ */
+export function seniorityBand(seniority?: string): SeniorityBand {
+  const s = seniority ?? "";
+  if (/manager|director|head|chief|c-level|\bvp\b|\bexec|\bceo\b|founder|owner/i.test(s)) return "manager";
+  if (/lead|staff|principal|supervisor/i.test(s)) return "lead";
+  if (/senior/i.test(s)) return "senior";
+  if (/junior|entry|intern|graduate|associate|trainee|apprentice|student/i.test(s)) return "junior";
+  return "mid";
+}
+
 /**
  * How seniority shifts an interview, in any field: craft depth peaks at senior
  * and leadership focus climbs with rank.
  */
 export function seniorityWeights(seniority?: string): { depth: number; leadership: number } {
-  const s = seniority ?? "";
-  if (/manager|director|head|chief|vp/i.test(s)) return { depth: 0.6, leadership: 0.9 };
-  if (/lead|staff|principal|supervisor/i.test(s)) return { depth: 0.85, leadership: 0.7 };
-  if (/senior/i.test(s)) return { depth: 0.9, leadership: 0.5 };
-  if (/junior|entry|intern|graduate|associate|trainee|apprentice/i.test(s)) return { depth: 0.7, leadership: 0.1 };
-  return { depth: 0.8, leadership: 0.3 };
+  return {
+    manager: { depth: 0.6, leadership: 0.9 },
+    lead: { depth: 0.85, leadership: 0.7 },
+    senior: { depth: 0.9, leadership: 0.5 },
+    junior: { depth: 0.7, leadership: 0.1 },
+    mid: { depth: 0.8, leadership: 0.3 },
+  }[seniorityBand(seniority)];
 }

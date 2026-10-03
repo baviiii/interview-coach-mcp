@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { certStatus, matchCertification } from "../domain/certifications.js";
+import { resolveGoal } from "../domain/goal.js";
 import type {
   ApplicationsSnapshot,
   CareerGoal,
@@ -219,31 +220,26 @@ async function readCertifications(db: SupabaseClient, userId: string): Promise<C
 }
 
 /**
- * Career goal = user_preferences (field/seniority/role type) + the latest
- * active "career_goal" recommendation (free-text target role, written by
- * set_career_goal — user_preferences has no role column).
+ * Career goal, from the learner's profile first (target job titles, level —
+ * what getting-started and Settings write), then user_preferences and the
+ * active "career_goal" recommendation for learners who never filled it in.
+ * Precedence lives in `resolveGoal`; each read here is best-effort.
  */
 async function readGoal(db: SupabaseClient, userId: string): Promise<CareerGoal | null> {
-  let goal: CareerGoal | null = null;
-  try {
-    const { data } = await db
+  const [profile, prefs, goalRow] = await Promise.all([
+    db
+      .from("profiles")
+      .select("target_job_titles, current_job_title, career_level")
+      .eq("id", userId)
+      .maybeSingle()
+      .then(({ data }) => data, () => null),
+    db
       .from("user_preferences")
       .select("preferred_field, seniority_level, job_role_type, interview_types")
       .eq("user_id", userId)
-      .maybeSingle();
-    if (data) {
-      goal = {
-        targetField: data.preferred_field ?? undefined,
-        seniority: data.seniority_level ?? undefined,
-        jobRoleType: data.job_role_type ?? undefined,
-        interviewTypes: Array.isArray(data.interview_types) ? data.interview_types : undefined,
-      };
-    }
-  } catch {
-    /* best-effort */
-  }
-  try {
-    const { data } = await db
+      .maybeSingle()
+      .then(({ data }) => data, () => null),
+    db
       .from("ai_recommendations")
       .select("title")
       .eq("user_id", userId)
@@ -251,14 +247,10 @@ async function readGoal(db: SupabaseClient, userId: string): Promise<CareerGoal 
       .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(1)
-      .maybeSingle();
-    if (data?.title) {
-      goal = { ...(goal ?? {}), targetRole: String(data.title).replace(/^Goal:\s*/i, "") };
-    }
-  } catch {
-    /* best-effort */
-  }
-  return goal;
+      .maybeSingle()
+      .then(({ data }) => data, () => null),
+  ]);
+  return resolveGoal({ profile, prefs, goalTitle: goalRow?.title });
 }
 
 async function readResumeSummary(db: SupabaseClient, userId: string): Promise<string | null> {

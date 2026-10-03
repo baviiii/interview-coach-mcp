@@ -15,7 +15,8 @@ import {
   formatCredentialCandidates,
   matchCertification,
 } from "../src/domain/certifications.js";
-import { neutralProfile, parseFieldProfile, type FieldProfile } from "../src/domain/field-profile.js";
+import { neutralProfile, parseFieldProfile, seniorityBand, type FieldProfile } from "../src/domain/field-profile.js";
+import { resolveGoal, withTargetTitleFirst } from "../src/domain/goal.js";
 import { interviewBlueprint } from "../src/domain/interview-loop.js";
 import { realWorldBlock } from "../src/domain/prompts.js";
 import { deriveSkillTargets } from "../src/domain/targets.js";
@@ -256,6 +257,54 @@ check("wikipedia keeps only titles about the field", () => {
   assert.ok(!titleFitsField("Solar power in Australia", "Electrician"));
   assert.ok(!titleFitsField("Microsoft", "Backend Software Engineer"));
   assert.ok(!titleFitsField("Birth certificate", "Registered Nurse"));
+});
+
+// 16) The profile's target role is the goal; older records only fill gaps.
+check("profile target role wins over older goal records", () => {
+  const goal = resolveGoal({
+    profile: { target_job_titles: ["  Electrician ", "Solar installer"], current_job_title: "Apprentice", career_level: "entry" },
+    prefs: { preferred_field: "Software Engineering", seniority_level: "Senior", interview_types: ["behavioral"] },
+    goalTitle: "Goal: Backend Engineer",
+  });
+  assert.equal(goal!.targetRole, "Electrician");
+  assert.equal(goal!.targetField, "Electrician");
+  assert.equal(goal!.seniority, "entry");
+  assert.deepEqual(goal!.interviewTypes, ["behavioral"]);
+});
+
+check("older goal records still work without a profile role", () => {
+  const goal = resolveGoal({ prefs: { preferred_field: "Nursing" }, goalTitle: "Goal: ICU nurse" });
+  assert.equal(goal!.targetRole, "ICU nurse");
+  assert.equal(goal!.targetField, "Nursing");
+});
+
+check("a current job is a field, never the goal", () => {
+  const goal = resolveGoal({ profile: { target_job_titles: [], current_job_title: "Barista" } });
+  assert.equal(goal!.targetField, "Barista");
+  assert.equal(goal!.targetRole, undefined);
+  assert.equal(resolveGoal({}), null);
+  assert.equal(resolveGoal({ profile: { target_job_titles: ["", "  "] } }), null);
+});
+
+check("a new goal goes first in the target list, deduped and capped", () => {
+  assert.deepEqual(withTargetTitleFirst(["Plumber", "electrician", "Gasfitter"], "Electrician"), ["Electrician", "Plumber", "Gasfitter"]);
+  assert.equal(withTargetTitleFirst(["a", "b", "c", "d", "e", "f"], "g").length, 6);
+  assert.deepEqual(withTargetTitleFirst(null, "Chef"), ["Chef"]);
+});
+
+// 17) Every level vocabulary in the product maps to the right band.
+check("seniority words from every source are understood", () => {
+  for (const [word, band] of [
+    ["c-level", "manager"], ["exec", "manager"], ["VP", "manager"], ["director", "manager"], ["Owner", "manager"],
+    ["lead", "lead"], ["principal", "lead"], ["Supervisor", "lead"],
+    ["senior", "senior"],
+    ["student", "junior"], ["entry", "junior"], ["Apprentice", "junior"], ["Graduate", "junior"],
+    ["mid", "mid"], ["Mid-Level", "mid"], ["", "mid"],
+  ] as const) {
+    assert.equal(seniorityBand(word), band, `${word} → ${band}`);
+  }
+  // "vp" must not fire inside an ordinary word.
+  assert.equal(seniorityBand("mvp builder"), "mid");
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);
