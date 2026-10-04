@@ -9,6 +9,11 @@
  *   - the REAL-WORLD SIGNALS prompt block renders sources / stays empty when bare
  */
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+
+import { skillLevel } from "../src/context/assemble.js";
+import { nextLevel, normalizeSkillCategory } from "../src/context/persist.js";
+import { FUNCTIONS_USED, TABLES_USED } from "../src/schema-used.js";
 
 import {
   buildCredentialCandidates,
@@ -476,6 +481,35 @@ await checkAsync("'not a job' is remembered, a failed lookup is retried", async 
   await resolveFieldProfile(failing, "zzqx outage field");
   console.warn = warn;
   assert.equal(calls, 2, "a failure is never cached");
+});
+
+// 20) Every table and database function the code touches is in the schema map,
+//     so `npm run schema-check` can't miss one.
+check("every .from() and .rpc() in src is in the schema map", () => {
+  const files = readdirSync(new URL("../src", import.meta.url), { recursive: true, withFileTypes: true })
+    .filter((d) => d.isFile() && d.name.endsWith(".ts") && d.name !== "schema-used.ts")
+    .map((d) => readFileSync(`${d.parentPath}/${d.name}`, "utf8"));
+  const tables = new Set(files.flatMap((s) => [...s.matchAll(/\.from\("([a-z_]+)"\)/g)].map((m) => m[1]!)));
+  const fns = new Set(files.flatMap((s) => [...s.matchAll(/\.rpc\("([a-z_]+)"/g)].map((m) => m[1]!)));
+  assert.ok(tables.size > 10, "found the tables");
+  for (const t of tables) assert.ok(t in TABLES_USED, `table "${t}" is used but missing from src/schema-used.ts`);
+  for (const f of fns) assert.ok(FUNCTIONS_USED.includes(f), `function "${f}" is used but missing from src/schema-used.ts`);
+});
+
+// 21) The skill flywheel's maths and category mapping.
+check("skill levels: tested numbers, otherwise the band", () => {
+  assert.equal(skillLevel({ proficiency: "advanced", proficiency_level: 0, times_tested: 0 }), 75, "self-reported, never tested");
+  assert.equal(skillLevel({ proficiency: "advanced", proficiency_level: 42, times_tested: 3 }), 42, "tested: the number wins");
+  assert.equal(skillLevel({ proficiency_level: 30 }), 30);
+  assert.equal(skillLevel({}), 0);
+  assert.equal(nextLevel(50, { name: "x", demonstrated: 90 }), 64, "35% of the way to the evidence");
+  assert.equal(nextLevel(10, { name: "x", floor: 65 }), 65, "a cert sets a floor");
+  assert.equal(nextLevel(80, { name: "x", floor: 65 }), 80, "a floor never lowers");
+  assert.equal(normalizeSkillCategory("Soft skills"), "behavioral");
+  assert.equal(normalizeSkillCategory("People management"), "leadership");
+  assert.equal(normalizeSkillCategory("technical"), "technical");
+  assert.equal(normalizeSkillCategory("Clinical"), "domain");
+  assert.equal(normalizeSkillCategory(undefined), undefined);
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

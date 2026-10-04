@@ -19,6 +19,14 @@ jobs:
       - run: npm run e2e
       - run: npm run build
 
+      # Every table, column and function this server uses must still exist in
+      # the live database (zero-row probes with the public key, no data read).
+      # Skipped with a warning until the two repository variables are set.
+      - run: npm run schema-check
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+
       # The deploy ships this Dockerfile, so prove the image actually starts on
       # every push — a broken build or start command then never reaches main.
       - name: Image boots
