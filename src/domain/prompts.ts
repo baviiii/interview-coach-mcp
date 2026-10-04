@@ -798,7 +798,7 @@ confidence 0-1 reflecting how much real signal exists. List basedOn honestly —
  * Describe how one occupation hires — the input that replaced the hardcoded
  * career-path table. Field-level, not learner-level, so it is cached per field.
  */
-export function fieldProfilePrompt(args: { field: string; role?: string }): PromptPair {
+export function fieldProfilePrompt(args: { field: string }): PromptPair {
   const system = `You are a labour-market analyst who knows how hiring actually works in EVERY occupation — trades, healthcare, hospitality, law, finance, education, government, tech and everything between. Describe how employers in the given field interview and what they screen for. Be concrete to this field; do not default to software or corporate-office assumptions unless the field is one.
 
 The field is typed by a learner, so it may be slang, misspelt or vague ("sparky", "nurse icu", "chippy").
@@ -816,7 +816,8 @@ Return ONLY JSON:
 For "levels", use 1-4 words each, as people in this field say them (an electrician's entry stage is "Apprentice", a nurse's is "Graduate nurse"), and leave out stages this field doesn't really have.
 List at most 6 credentials, and only real ones you are confident exist. Credentials means licences, registrations and certifications — never degrees or diplomas of general education. If the field has none that matter, return an empty list.`;
 
-  const user = `FIELD: ${args.field}${args.role ? `\nTARGET ROLE: ${args.role}` : ""}`;
+  // The field name only: the result is shared by every learner, so nothing personal may shape it.
+  const user = `FIELD: ${args.field}`;
 
   return { system, user };
 }

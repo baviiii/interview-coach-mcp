@@ -68,7 +68,6 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         }),
         // The real field only — never the "their field" placeholder.
         resolveFieldProfile(horus, ctx.goal?.targetField ?? ctx.targetField ?? args.goal, {
-          role: ctx.goal?.targetRole,
           userRef: auth.userId,
           userToken: auth.jwt,
         }),
@@ -163,7 +162,6 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         // refusing. The result writes back, so the matrix exists after this.
         const field = args.field ?? ctx.goal?.targetField ?? ctx.targetField;
         const profile = await resolveFieldProfile(horus, field, {
-          role: ctx.goal?.targetRole,
           userRef: auth.userId,
           userToken: auth.jwt,
         });

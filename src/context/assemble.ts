@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { certStatus, matchCertification } from "../domain/certifications.js";
-import { resolveGoal } from "../domain/goal.js";
+import { goalForRequest, resolveGoal, type GoalSources } from "../domain/goal.js";
 import type {
   ApplicationsSnapshot,
   CareerGoal,
@@ -33,13 +33,15 @@ export async function assembleLearnerContext(
     patternsRes,
     scoresRes,
     certs,
-    goal,
+    goalRecords,
     resumeSummary,
     applications,
     milestonesRes,
     recentQuestionThemes,
   ] = await Promise.all([
-    db.from("profiles").select("ai_persona").eq("id", userId).maybeSingle(),
+    // "*" rather than named columns: one read serves the persona and the goal,
+    // and a deployment missing a column still gets the rest instead of an error.
+    db.from("profiles").select("*").eq("id", userId).maybeSingle(),
     readSkills(db, userId),
     db.from("user_patterns").select("*").eq("user_id", userId).maybeSingle(),
     db
@@ -49,12 +51,21 @@ export async function assembleLearnerContext(
       .order("recorded_at", { ascending: false })
       .limit(10),
     readCertifications(db, userId),
-    readGoal(db, userId),
+    readGoalRecords(db, userId),
     readResumeSummary(db, userId),
     readApplications(db, userId),
     db.from("user_milestones").select("id", { count: "exact", head: true }).eq("user_id", userId),
     readRecentQuestions(db, userId),
   ]);
+
+  const profile = (profileRes.data ?? null) as Record<string, unknown> | null;
+  let goal: CareerGoal | null = null;
+  try {
+    goal = goalForRequest(resolveGoal({ profile, ...goalRecords }), opts);
+  } catch (e) {
+    // A goal is worth having, never worth failing every tool over.
+    console.warn(`[assemble] goal unavailable: ${(e as Error).message}`);
+  }
 
   const weakSkills = skills.filter((s) => s.proficiency < 60).slice(0, 5);
   const strongSkills = [...skills].filter((s) => s.proficiency >= 75).slice(0, 5);
@@ -76,7 +87,7 @@ export async function assembleLearnerContext(
 
   const ctx: LearnerContext = {
     userId,
-    persona: (profileRes.data as any)?.ai_persona ?? null,
+    persona: (profile?.ai_persona as LearnerContext["persona"]) ?? null,
     targetField: opts.field ?? goal?.targetField,
     targetSeniority: opts.seniority ?? goal?.seniority,
     skills,
@@ -220,19 +231,15 @@ async function readCertifications(db: SupabaseClient, userId: string): Promise<C
 }
 
 /**
- * Career goal, from the learner's profile first (target job titles, level —
- * what getting-started and Settings write), then user_preferences and the
- * active "career_goal" recommendation for learners who never filled it in.
- * Precedence lives in `resolveGoal`; each read here is best-effort.
+ * The older goal records — user_preferences and the active "career_goal"
+ * recommendation — which only matter when the profile (read once, above) says
+ * nothing. Precedence lives in `resolveGoal`; each read here is best-effort.
  */
-async function readGoal(db: SupabaseClient, userId: string): Promise<CareerGoal | null> {
-  const [profile, prefs, goalRow] = await Promise.all([
-    db
-      .from("profiles")
-      .select("target_job_titles, current_job_title, career_level")
-      .eq("id", userId)
-      .maybeSingle()
-      .then(({ data }) => data, () => null),
+async function readGoalRecords(
+  db: SupabaseClient,
+  userId: string,
+): Promise<Pick<GoalSources, "prefs" | "goalTitle">> {
+  const [prefs, goalRow] = await Promise.all([
     db
       .from("user_preferences")
       .select("preferred_field, seniority_level, job_role_type, interview_types")
@@ -250,7 +257,7 @@ async function readGoal(db: SupabaseClient, userId: string): Promise<CareerGoal 
       .maybeSingle()
       .then(({ data }) => data, () => null),
   ]);
-  return resolveGoal({ profile, prefs, goalTitle: goalRow?.title });
+  return { prefs, goalTitle: goalRow?.title };
 }
 
 async function readResumeSummary(db: SupabaseClient, userId: string): Promise<string | null> {

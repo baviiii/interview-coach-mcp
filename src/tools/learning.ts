@@ -277,7 +277,6 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
         }),
         // The real field only — never the "their field" placeholder.
         resolveFieldProfile(horus, args.field ?? ctx.goal?.targetField ?? ctx.targetField ?? ctx.job?.title, {
-          role: ctx.goal?.targetRole,
           userRef: auth.userId,
           userToken: auth.jwt,
         }),

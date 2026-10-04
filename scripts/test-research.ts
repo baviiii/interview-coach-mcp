@@ -22,9 +22,10 @@ import {
   seniorityBand,
   type FieldProfile,
 } from "../src/domain/field-profile.js";
-import { resolveGoal, withTargetTitleFirst } from "../src/domain/goal.js";
+import { goalForRequest, resolveGoal, toStoredLevel, withTargetTitleFirst } from "../src/domain/goal.js";
 import { interviewBlueprint } from "../src/domain/interview-loop.js";
-import { realWorldBlock } from "../src/domain/prompts.js";
+import { fieldProfilePrompt, realWorldBlock } from "../src/domain/prompts.js";
+import { resolveFieldProfile } from "../src/context/field-profile.js";
 import { deriveSkillTargets } from "../src/domain/targets.js";
 import { withMarket, type InferRequest, type ModelProvider } from "../src/adapters/horus/index.js";
 import { emptyResearch, type ResearchSnippet } from "../src/adapters/research/port.js";
@@ -294,10 +295,47 @@ check("a current job is a field, never the goal", () => {
   assert.equal(resolveGoal({ profile: { target_job_titles: ["", "  "] } }), null);
 });
 
-check("a new goal goes first in the target list, deduped and capped", () => {
+// Same order as the web app's "Going for" card, so the two never disagree.
+check("field precedence matches the web app", () => {
+  const stale = { prefs: { preferred_field: "Software Engineering" }, goalTitle: "Goal: Backend Engineer" };
+  assert.equal(resolveGoal({ profile: { current_job_title: "Barista" }, ...stale })!.targetField, "Barista");
+  assert.equal(resolveGoal({ profile: { ai_persona: { function: "Hospitality" } }, ...stale })!.targetField, "Hospitality");
+  assert.equal(resolveGoal(stale)!.targetField, "Software Engineering", "older records only when the profile is silent");
+});
+
+// A divergent schema must leave the goal absent, not crash every tool.
+check("odd column shapes are skipped, not thrown on", () => {
+  assert.doesNotThrow(() => resolveGoal({ profile: { target_job_titles: "Electrician", ai_persona: "x" }, goalTitle: 42 }));
+  assert.equal(resolveGoal({ profile: { target_job_titles: "Electrician" } }), null);
+  assert.equal(resolveGoal({ profile: { target_job_titles: [7, null, "Chef"] } })!.targetRole, "Chef");
+});
+
+check("a new goal goes first in the target list, and nothing is dropped", () => {
   assert.deepEqual(withTargetTitleFirst(["Plumber", "electrician", "Gasfitter"], "Electrician"), ["Electrician", "Plumber", "Gasfitter"]);
-  assert.equal(withTargetTitleFirst(["a", "b", "c", "d", "e", "f"], "g").length, 6);
+  // Settings allows any number of titles; saving a role must never delete one.
+  assert.equal(withTargetTitleFirst(["a", "b", "c", "d", "e", "f", "g", "h"], "i").length, 9);
   assert.deepEqual(withTargetTitleFirst(null, "Chef"), ["Chef"]);
+  assert.deepEqual(withTargetTitleFirst("not a list", "Chef"), ["Chef"]);
+});
+
+// "Just this once": a request about a different job stops using the saved job's role and level.
+check("a request's own job replaces the saved goal for that request", () => {
+  const saved = { targetRole: "Electrician", targetField: "Electrician", seniority: "entry" };
+  assert.deepEqual(goalForRequest(saved, { field: "Barista" }), { targetRole: "Barista", targetField: "Barista", seniority: undefined });
+  assert.equal(goalForRequest(saved, { field: "Barista", seniority: "senior" })!.seniority, "senior");
+  assert.deepEqual(goalForRequest(saved, { field: "electrician" }), saved, "the saved job keeps its level");
+  assert.equal(goalForRequest(saved, {}), saved);
+  assert.equal(goalForRequest(null, { field: "Chef" })!.targetRole, "Chef");
+});
+
+check("goal seniority is stored in the profile's vocabulary", () => {
+  for (const [input, stored] of [
+    ["Senior", "senior"], ["Mid-Level", "mid"], ["Junior", "entry"], ["Apprentice", "entry"],
+    ["Director", "director"], ["VP", "vp"], ["C-Level", "c-level"], ["Head of Nursing", "manager"],
+  ] as const) {
+    assert.equal(toStoredLevel(input), stored, `${input} → ${stored}`);
+  }
+  assert.equal(toStoredLevel(undefined), undefined);
 });
 
 // 17) Every level vocabulary in the product maps to the right band.
@@ -359,6 +397,47 @@ check("interview style reads from the profile", () => {
     "Interviews focus mostly on the craft, through hands-on 'walk me through it' tasks and realistic scenarios.",
   );
   assert.match(describeInterviewStyle({ ...nurse, technicalWeight: 0.3 }), /^Interviews focus mostly on how you work with people/);
+});
+
+// 19) The field-profile cache is shared by every learner: nothing personal may shape it.
+check("the shared job profile is asked about the job name only", () => {
+  const { user } = fieldProfilePrompt({ field: "Registered Nurse" });
+  assert.equal(user, "FIELD: Registered Nurse");
+});
+
+async function checkAsync(name: string, fn: () => Promise<void>) {
+  await fn();
+  passed += 1;
+  console.log(`  ✓ ${name}`);
+}
+
+await checkAsync("'not a job' is remembered, a failed lookup is retried", async () => {
+  let calls = 0;
+  const answering = (data: unknown): ModelProvider => ({
+    infer: async <T>() => {
+      calls += 1;
+      return { data: data as T, raw: "", model: "fake", cached: false };
+    },
+  });
+  const failing: ModelProvider = {
+    infer: async () => {
+      calls += 1;
+      throw new Error("upstream down");
+    },
+  };
+
+  calls = 0;
+  await resolveFieldProfile(answering({ isOccupation: "false" }), "zzqx not a job");
+  await resolveFieldProfile(answering({ isOccupation: "false" }), "zzqx not a job");
+  assert.equal(calls, 1, "the answer is cached");
+
+  calls = 0;
+  const warn = console.warn;
+  console.warn = () => {};
+  await resolveFieldProfile(failing, "zzqx outage field");
+  await resolveFieldProfile(failing, "zzqx outage field");
+  console.warn = warn;
+  assert.equal(calls, 2, "a failure is never cached");
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

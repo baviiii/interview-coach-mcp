@@ -12,7 +12,7 @@ import {
   matchCertification,
 } from "../domain/certifications.js";
 import { describeInterviewStyle, type FieldProfile } from "../domain/field-profile.js";
-import { withTargetTitleFirst } from "../domain/goal.js";
+import { toStoredLevel, withTargetTitleFirst } from "../domain/goal.js";
 import {
   careerGuidancePrompt,
   careerRoadmapPrompt,
@@ -208,7 +208,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           intents: ["credential", "fact"],
           max: 5,
         }),
-        resolveFieldProfile(horus, field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+        resolveFieldProfile(horus, field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
       const candidates = credentialLines(ctx, research, profile, {
         seniority: args.seniority,
@@ -356,7 +356,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Set or update the career goal",
       description:
-        "Persists the learner's target field, role and seniority so every other tool (questions, plans, guidance, recommendations) conditions on it. The goal IS the personalization anchor.",
+        "Persists the learner's target field, role and seniority so every other tool (questions, plans, guidance, recommendations) conditions on it. The goal IS the personalization anchor. Pass targetRole (a job title, e.g. 'ICU nurse'): it becomes the learner's first target job title, which the web app and every tool read first; a field alone is kept only as a fallback.",
       inputSchema: S.setCareerGoalInput,
     },
     async (args) => {
@@ -403,18 +403,31 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         }
       }
 
-      // The profile's target titles are the source of truth the web app and
-      // assemble both read, so the new goal goes first there too.
+      // The profile is the source of truth the web app and assemble both read,
+      // so the goal goes there too: the role first in the target titles (only a
+      // job title — a field label like "Software Engineering" isn't one), and
+      // the seniority as the stored career level.
       let profilePersisted = false;
-      try {
-        const { data } = await auth.db.from("profiles").select("target_job_titles").eq("id", auth.userId).maybeSingle();
-        const { error } = await auth.db
-          .from("profiles")
-          .update({ target_job_titles: withTargetTitleFirst(data?.target_job_titles, args.targetRole ?? args.targetField) })
-          .eq("id", auth.userId);
-        profilePersisted = !error;
-      } catch {
-        /* best-effort */
+      const level = toStoredLevel(args.seniority);
+      if (args.targetRole || level) {
+        try {
+          const updates: Record<string, unknown> = {};
+          if (level) updates.career_level = level;
+          if (args.targetRole) {
+            const { data, error } = await auth.db
+              .from("profiles")
+              .select("target_job_titles")
+              .eq("id", auth.userId)
+              .maybeSingle();
+            // Unread titles must never be overwritten: that would erase the learner's list.
+            if (error) throw error;
+            updates.target_job_titles = withTargetTitleFirst(data?.target_job_titles, args.targetRole);
+          }
+          const { error } = await auth.db.from("profiles").update(updates).eq("id", auth.userId);
+          profilePersisted = !error;
+        } catch {
+          /* best-effort — the older records above still hold the goal */
+        }
       }
 
       return ok({
@@ -440,11 +453,17 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Describe a job",
       description:
-        "Turns what a learner typed ('sparky', 'nurse icu') into the standard job title, what its interviews focus on, the licences it expects in this market and what each career stage is called — for confirming a role before saving it. known=false means it isn't a recognisable job, and nothing about it is invented.",
+        "Turns what a learner typed ('sparky', 'nurse icu') into the standard job title, what its interviews focus on, the licences it expects in this market and what each career stage is called — for confirming a role before saving it. known=false means it isn't a recognisable job, and nothing about it is invented. Errors when the job couldn't be checked, so a failed lookup is never mistaken for 'not a job'.",
       inputSchema: S.describeFieldInput,
     },
     async (args) => {
       const profile = await resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt });
+      // A neutral profile is either an answer ("not a job") or a failed lookup.
+      // Only the first may come back as known=false; the second must fail, so the
+      // caller retries rather than telling the learner their job isn't real.
+      if (profile.source === "neutral" && !profile.notOccupation) {
+        return err("Couldn't check that job right now. Try again in a moment.");
+      }
       const known = profile.source === "model";
       return ok({
         input: args.field,
@@ -487,7 +506,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           intents: ["credential", "experience", "fact"],
           max: 4,
         }),
-        resolveFieldProfile(horus, field, { role: targetRole, userRef: auth.userId, userToken: auth.jwt }),
+        resolveFieldProfile(horus, field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
 
       const skeleton = roadmapSkeleton(args.horizonWeeks ?? 12, args.hoursPerWeek ?? 6);
