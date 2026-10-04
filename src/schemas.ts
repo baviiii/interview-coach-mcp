@@ -3,10 +3,14 @@ import { z } from "zod";
 /** Tool input shapes (ZodRawShape — plain objects of zod validators, as the
  *  MCP SDK expects). Identity is NEVER an input; it comes from the JWT. */
 
+/** A saved job is one of the learner’s own job-tracker applications. */
+const JOB_ID_HELP =
+  "An application id from the learner’s job tracker (job_applications.id); the coach reads that job’s title, company and description.";
+
 export const buildPlanInput = {
   source: z.object({
     type: z.enum(["saved_job", "paste", "role"]),
-    jobId: z.string().uuid().optional(),
+    jobId: z.string().uuid().optional().describe(JOB_ID_HELP),
     jobDescription: z.string().max(20000).optional(),
     field: z.string().optional(),
     seniority: z.string().optional(),
@@ -18,7 +22,7 @@ export const buildPlanInput = {
 export const generateQuestionsInput = {
   field: z.string().min(1),
   seniority: z.string().optional(),
-  jobId: z.string().uuid().optional(),
+  jobId: z.string().uuid().optional().describe(JOB_ID_HELP),
   jobDescription: z.string().max(20000).optional(),
   focusAreas: z.array(z.string()).optional(),
   // Clamp instead of reject: LLM callers routinely ask for 1-2 questions,
@@ -33,7 +37,7 @@ export const generateQuestionsInput = {
 export const startSessionInput = {
   field: z.string().min(1),
   seniority: z.string().optional(),
-  jobId: z.string().uuid().optional(),
+  jobId: z.string().uuid().optional().describe(JOB_ID_HELP),
   jobDescription: z.string().max(20000).optional(),
   // Round focus (e.g. from build_interview_plan) — steers question coverage.
   focusAreas: z.array(z.string().max(200)).max(12).optional(),

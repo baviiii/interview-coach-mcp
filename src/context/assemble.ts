@@ -102,18 +102,23 @@ export async function assembleLearnerContext(
     job: null,
   };
 
+  // A saved job is one of the learner's own job-tracker applications. It used to
+  // be a row in jobs_catalog, which CareerCraft dropped in September — after
+  // which every saved-job lookup quietly found nothing.
   if (opts.jobId) {
-    const { data: job } = await db
-      .from("jobs_catalog")
-      .select("id, title, company, location, full_description, description_snippet")
+    const { data: job, error: jobError } = await db
+      .from("job_applications")
+      .select("id, job_title, company, location, job_description")
       .eq("id", opts.jobId)
+      .eq("user_id", userId)
       .maybeSingle();
+    if (jobError) console.warn(`[assemble] job_applications read failed: ${jobError.message}`);
 
     if (job) {
       const { data: fit } = await db
         .from("job_fit_scores")
         .select("score, strengths, gaps")
-        .eq("jobs_catalog_id", opts.jobId)
+        .eq("application_id", opts.jobId)
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -121,10 +126,10 @@ export async function assembleLearnerContext(
 
       ctx.job = {
         jobId: job.id,
-        title: job.title,
+        title: job.job_title,
         company: job.company,
         location: job.location ?? undefined,
-        description: job.full_description ?? job.description_snippet ?? undefined,
+        description: job.job_description ?? undefined,
         fitScore: fit?.score ?? undefined,
         gaps: toStringArray(fit?.gaps),
         strengths: toStringArray(fit?.strengths),
@@ -140,49 +145,36 @@ export async function assembleLearnerContext(
  * proficiency_level INT; profile: skill_name TEXT + proficiency band). Read
  * whichever is live and normalize to SkillSnapshot.
  */
+/**
+ * The skill matrix: user_skills rows (keyed by skill_id since CareerCraft's May
+ * canonicalisation) joined to their names in the shared skill_tags dictionary.
+ */
 async function readSkills(db: SupabaseClient, userId: string): Promise<SkillSnapshot[]> {
   try {
     const { data, error } = await db
       .from("user_skills")
-      .select("skill_id, proficiency_level, trend, times_tested, last_tested_at, skill_tags ( name, category )")
-      .eq("user_id", userId)
-      .order("proficiency_level", { ascending: true });
-    if (!error && data && data.length > 0) {
-      return data
-        .filter((row: any) => row.skill_tags?.name)
-        .map((row: any) => ({
+      .select("skill_id, proficiency, proficiency_level, trend, times_tested, last_tested_at, skill_tags ( name, category )")
+      .eq("user_id", userId);
+    if (error) {
+      console.warn(`[assemble] user_skills read failed: ${error.message}`);
+      return [];
+    }
+    return (data ?? [])
+      .filter((row: any) => row.skill_tags?.name)
+      .map(
+        (row: any): SkillSnapshot => ({
           skillId: row.skill_id ?? undefined,
           name: row.skill_tags.name,
           category: row.skill_tags.category ?? undefined,
-          proficiency: row.proficiency_level ?? 0,
+          proficiency: skillLevel(row),
           trend: (row.trend ?? "stable") as SkillSnapshot["trend"],
           timesTested: row.times_tested ?? 0,
           lastTestedAt: row.last_tested_at ?? null,
-        }));
-    }
-    if (error) throw error;
-  } catch {
-    /* fall through to the flexible shape */
-  }
-
-  try {
-    const { data } = await db.from("user_skills").select("*").eq("user_id", userId);
-    return (data ?? [])
-      .map((row: any): SkillSnapshot | null => {
-        const name = row.skill_name ?? null;
-        if (!name) return null;
-        return {
-          name,
-          category: row.category ?? undefined,
-          proficiency: row.proficiency_level ?? bandToProficiency(row.proficiency),
-          trend: (row.trend ?? "stable") as SkillSnapshot["trend"],
-          timesTested: row.times_tested ?? 0,
-          lastTestedAt: row.last_tested_at ?? null,
-        };
-      })
-      .filter((s): s is SkillSnapshot => s !== null)
+        }),
+      )
       .sort((a, b) => a.proficiency - b.proficiency);
-  } catch {
+  } catch (e) {
+    console.warn(`[assemble] user_skills read failed: ${(e as Error).message}`);
     return [];
   }
 }
@@ -200,6 +192,24 @@ export function bandToProficiency(band: unknown): number {
     default:
       return 0;
   }
+}
+
+/**
+ * A user_skills row's level, 0–100. Onboarding and Settings record only the
+ * `proficiency` band, and `proficiency_level` defaults to 0, so reading the
+ * number alone made every self-reported skill look like a 0/100 weakness and
+ * aimed interviews at people's strengths. The number is trusted once this
+ * server has actually tested the skill; until then the band is the evidence.
+ */
+export function skillLevel(row: {
+  proficiency_level?: unknown;
+  proficiency?: unknown;
+  times_tested?: unknown;
+}): number {
+  const tested = typeof row.times_tested === "number" && row.times_tested > 0;
+  if (tested && typeof row.proficiency_level === "number") return row.proficiency_level;
+  if (typeof row.proficiency === "string" && row.proficiency) return bandToProficiency(row.proficiency);
+  return typeof row.proficiency_level === "number" ? row.proficiency_level : 0;
 }
 
 async function readCertifications(db: SupabaseClient, userId: string): Promise<CertificationSnapshot[]> {
