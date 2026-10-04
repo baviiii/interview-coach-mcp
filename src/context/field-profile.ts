@@ -21,14 +21,24 @@ const MAX_ENTRIES = 500;
 
 const cache = new Map<string, { at: number; ttl: number; val: Promise<FieldProfile> }>();
 
-// Keyed by market too: the same field has different licences in different countries.
-const keyFor = (field: string): string => {
-  const f = field
+/**
+ * The one form of a field that both the cache key and the model see. Keying on
+ * a cleaned form while prompting with the raw text let whatever the cleaning
+ * dropped — another script, emoji, punctuation — carry instructions into a
+ * profile then cached for everyone who typed the plain job name. Letters of
+ * every script are kept, so "护士" or "медсестра" are jobs, not empty keys.
+ */
+export function canonicalField(field: string | undefined): string {
+  return (field ?? "")
+    .normalize("NFKC")
     .toLowerCase()
-    .replace(/[^a-z0-9+#]+/g, " ")
+    .replace(/[^\p{L}\p{N}+#]+/gu, " ")
+    .trim()
+    .slice(0, 80)
     .trim();
-  return f ? `${config.market.toLowerCase()}|${f}` : "";
-};
+}
+
+const titleCase = (s: string) => s.replace(/(^|\s)\p{L}/gu, (m) => m.toUpperCase());
 
 export async function resolveFieldProfile(
   horus: ModelProvider,
@@ -36,16 +46,19 @@ export async function resolveFieldProfile(
   // Metering only. Deliberately nothing learner-specific that could reach the prompt.
   opts: { userRef?: string; userToken?: string } = {},
 ): Promise<FieldProfile> {
-  const name = field?.trim() ?? "";
-  const key = keyFor(name);
-  if (!key) return neutralProfile(name);
+  const text = canonicalField(field);
+  // Nothing left of it (punctuation only): an answer, not a lookup to retry.
+  if (!text) return { ...neutralProfile(field?.trim() ?? ""), notOccupation: true };
+  // Keyed by market too: the same field has different licences in different countries.
+  const key = `${config.market.toLowerCase()}|${text}`;
 
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < hit.ttl) return hit.val;
 
   // Cache the promise, not the result, so concurrent tools share one call.
+  const name = titleCase(text);
   const entry = { at: Date.now(), ttl: TTL_MS, val: Promise.resolve(neutralProfile(name)) };
-  entry.val = derive(horus, name, opts).then((profile) => {
+  entry.val = derive(horus, text, name, opts).then((profile) => {
     if (profile.notOccupation) entry.ttl = NOT_OCCUPATION_TTL_MS;
     else if (profile.source === "neutral") cache.delete(key); // a failed lookup: retry next time
     return profile;
@@ -55,13 +68,15 @@ export async function resolveFieldProfile(
   return entry.val;
 }
 
+/** `text` is exactly what the cache is keyed on; `field` is how the profile names it. */
 async function derive(
   horus: ModelProvider,
+  text: string,
   field: string,
   opts: { userRef?: string; userToken?: string },
 ): Promise<FieldProfile> {
   try {
-    const { system, user } = fieldProfilePrompt({ field });
+    const { system, user } = fieldProfilePrompt({ field: text });
     const res = await horus.infer({
       task: "field.profile",
       system,

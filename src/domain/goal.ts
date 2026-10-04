@@ -42,17 +42,20 @@ export function resolveGoal(s: GoalSources): CareerGoal | null {
   const targetTitle = list(p.target_job_titles)[0];
   const legacyRole = clean(typeof s.goalTitle === "string" ? s.goalTitle.replace(/^Goal:\s*/i, "") : undefined);
 
+  // Exactly the web app's "Going for" order (useTargetRole), for role and field
+  // alike, so the card and the coach never name different jobs. The older
+  // records come last: user_preferences.preferred_field / seniority_level were
+  // dropped from CareerCraft's schema, so they only exist on older deployments.
+  const role =
+    targetTitle ??
+    clean(p.current_job_title) ??
+    clean(persona.function) ??
+    legacyRole ??
+    clean(s.prefs?.preferred_field);
+
   const goal: CareerGoal = {
-    // Same order as the web app's "Going for" card (useTargetRole). A current
-    // job or persona can say what field someone is in, but only a stated target
-    // is a goal.
-    targetRole: targetTitle ?? legacyRole,
-    targetField:
-      targetTitle ??
-      clean(p.current_job_title) ??
-      clean(persona.function) ??
-      clean(s.prefs?.preferred_field) ??
-      legacyRole,
+    targetRole: role,
+    targetField: role,
     seniority: clean(p.career_level) ?? clean(s.prefs?.seniority_level),
     jobRoleType: clean(s.prefs?.job_role_type),
     interviewTypes: list(s.prefs?.interview_types),
@@ -65,19 +68,20 @@ export function resolveGoal(s: GoalSources): CareerGoal | null {
 
 /**
  * A request that names a field explicitly is about that field — the web app's
- * "just this once" role, or an agent asking about a specific job. When it isn't
- * the saved goal, the saved role and level stop applying for that request, so
- * research and prompts aren't a blend of two jobs.
+ * "just this once" role, or an agent asking about a specific job — so it
+ * replaces the saved role for that request, rather than research and prompts
+ * blending two jobs. The level is the request's when it gives one, otherwise
+ * the saved one: a request worded slightly differently ("Electrical" for a
+ * saved "Electrician") must not quietly lose the learner's level.
  */
 export function goalForRequest(
   goal: CareerGoal | null,
   opts: { field?: string; seniority?: string },
 ): CareerGoal | null {
   const field = clean(opts.field);
-  if (!field) return opts.seniority ? { ...(goal ?? {}), seniority: opts.seniority } : goal;
-  const same = [goal?.targetRole, goal?.targetField].some((g) => g?.toLowerCase() === field.toLowerCase());
-  if (same) return { ...goal, seniority: opts.seniority ?? goal?.seniority };
-  return { ...goal, targetField: field, targetRole: field, seniority: opts.seniority };
+  const seniority = clean(opts.seniority) ?? goal?.seniority;
+  if (!field) return goal || seniority ? { ...(goal ?? {}), seniority } : null;
+  return { ...goal, targetField: field, targetRole: field, seniority };
 }
 
 /** Put `title` first in the target list, dropping a case-insensitive duplicate. Nothing else is removed. */

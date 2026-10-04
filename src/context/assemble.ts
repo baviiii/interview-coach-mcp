@@ -39,9 +39,7 @@ export async function assembleLearnerContext(
     milestonesRes,
     recentQuestionThemes,
   ] = await Promise.all([
-    // "*" rather than named columns: one read serves the persona and the goal,
-    // and a deployment missing a column still gets the rest instead of an error.
-    db.from("profiles").select("*").eq("id", userId).maybeSingle(),
+    readProfile(db, userId),
     readSkills(db, userId),
     db.from("user_patterns").select("*").eq("user_id", userId).maybeSingle(),
     db
@@ -58,7 +56,7 @@ export async function assembleLearnerContext(
     readRecentQuestions(db, userId),
   ]);
 
-  const profile = (profileRes.data ?? null) as Record<string, unknown> | null;
+  const profile = profileRes;
   let goal: CareerGoal | null = null;
   try {
     goal = goalForRequest(resolveGoal({ profile, ...goalRecords }), opts);
@@ -235,6 +233,28 @@ async function readCertifications(db: SupabaseClient, userId: string): Promise<C
  * recommendation — which only matter when the profile (read once, above) says
  * nothing. Precedence lives in `resolveGoal`; each read here is best-effort.
  */
+/**
+ * The profile columns this server uses, and only those: the row also holds
+ * phone, bio and salary, which no tool needs on every call. A deployment
+ * missing one of them falls back to the whole row rather than losing it all.
+ */
+async function readProfile(db: SupabaseClient, userId: string): Promise<Record<string, unknown> | null> {
+  const named = await db
+    .from("profiles")
+    .select("ai_persona, target_job_titles, current_job_title, career_level")
+    .eq("id", userId)
+    .maybeSingle()
+    .then((r) => r, () => ({ data: null, error: new Error("profiles read failed") }));
+  if (!named.error) return (named.data as Record<string, unknown> | null) ?? null;
+  const whole = await db
+    .from("profiles")
+    .select("*")
+    .eq("id", userId)
+    .maybeSingle()
+    .then((r) => r.data, () => null);
+  return (whole as Record<string, unknown> | null) ?? null;
+}
+
 async function readGoalRecords(
   db: SupabaseClient,
   userId: string,
@@ -242,7 +262,9 @@ async function readGoalRecords(
   const [prefs, goalRow] = await Promise.all([
     db
       .from("user_preferences")
-      .select("preferred_field, seniority_level, job_role_type, interview_types")
+      // "*": preferred_field and seniority_level were dropped from CareerCraft's
+      // schema, and naming them made this read fail on every call.
+      .select("*")
       .eq("user_id", userId)
       .maybeSingle()
       .then(({ data }) => data, () => null),

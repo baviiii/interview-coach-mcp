@@ -356,78 +356,87 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Set or update the career goal",
       description:
-        "Persists the learner's target field, role and seniority so every other tool (questions, plans, guidance, recommendations) conditions on it. The goal IS the personalization anchor. Pass targetRole (a job title, e.g. 'ICU nurse'): it becomes the learner's first target job title, which the web app and every tool read first; a field alone is kept only as a fallback.",
+        "Persists the learner's target field, role and seniority so every other tool (questions, plans, guidance, recommendations) conditions on it. The goal IS the personalization anchor. The goal becomes the learner's first target job title, which the web app and every tool read first: pass targetRole as a job title (e.g. 'ICU nurse'); without one, targetField is used. seniority is saved as the profile's career level.",
       inputSchema: S.setCareerGoalInput,
     },
     async (args) => {
-      let preferencesPersisted = false;
+      // What the learner is going for: the job title when given, otherwise the
+      // field. A field-only goal has to land somewhere that's read back, and the
+      // profile's target titles are the only such place left — CareerCraft
+      // dropped user_preferences.preferred_field and seniority_level.
+      const goalTitle = args.targetRole ?? args.targetField;
+      const level = toStoredLevel(args.seniority);
+
+      // user_preferences keeps only what it still has columns for.
+      let preferencesPersisted: boolean | null = null;
+      if (args.jobRoleType || args.interviewTypes) {
+        try {
+          const { error } = await auth.db.from("user_preferences").upsert(
+            {
+              user_id: auth.userId,
+              ...(args.jobRoleType ? { job_role_type: args.jobRoleType } : {}),
+              ...(args.interviewTypes ? { interview_types: args.interviewTypes } : {}),
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "user_id" },
+          );
+          preferencesPersisted = !error;
+        } catch {
+          preferencesPersisted = false;
+        }
+      }
+
+      // The profile is the source of truth the web app and assemble both read.
+      // Each write stands alone, so a failed titles read can't also lose the level.
+      let profilePersisted = false;
       try {
-        const { error } = await auth.db.from("user_preferences").upsert(
-          {
-            user_id: auth.userId,
-            preferred_field: args.targetField,
-            ...(args.seniority ? { seniority_level: args.seniority } : {}),
-            ...(args.jobRoleType ? { job_role_type: args.jobRoleType } : {}),
-            ...(args.interviewTypes ? { interview_types: args.interviewTypes } : {}),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "user_id" },
-        );
-        preferencesPersisted = !error;
+        const { data, error } = await auth.db
+          .from("profiles")
+          .select("target_job_titles")
+          .eq("id", auth.userId)
+          .maybeSingle();
+        // Unread titles must never be overwritten: that would erase the learner's list.
+        if (error) throw error;
+        const { error: writeError } = await auth.db
+          .from("profiles")
+          .update({ target_job_titles: withTargetTitleFirst(data?.target_job_titles, goalTitle) })
+          .eq("id", auth.userId);
+        profilePersisted = !writeError;
       } catch {
         /* best-effort */
       }
 
-      // user_preferences has no target-role column — the role lives as the
-      // single active career_goal recommendation (assemble reads it back).
-      let rolePersisted = false;
-      if (args.targetRole) {
+      let levelPersisted: boolean | null = null;
+      if (level) {
         try {
-          await auth.db
-            .from("ai_recommendations")
-            .update({ status: "expired" })
-            .eq("user_id", auth.userId)
-            .eq("recommendation_type", "career_goal")
-            .eq("status", "active");
-          const { error } = await auth.db.from("ai_recommendations").insert({
-            user_id: auth.userId,
-            recommendation_type: "career_goal",
-            title: `Goal: ${args.targetRole}`,
-            description: `${args.targetField}${args.seniority ? ` · ${args.seniority}` : ""}`,
-            ai_reasoning: "Set by the learner via set_career_goal.",
-            status: "active",
-          });
-          rolePersisted = !error;
+          const { error } = await auth.db.from("profiles").update({ career_level: level }).eq("id", auth.userId);
+          levelPersisted = !error;
         } catch {
-          /* best-effort */
+          levelPersisted = false;
         }
       }
 
-      // The profile is the source of truth the web app and assemble both read,
-      // so the goal goes there too: the role first in the target titles (only a
-      // job title — a field label like "Software Engineering" isn't one), and
-      // the seniority as the stored career level.
-      let profilePersisted = false;
-      const level = toStoredLevel(args.seniority);
-      if (args.targetRole || level) {
-        try {
-          const updates: Record<string, unknown> = {};
-          if (level) updates.career_level = level;
-          if (args.targetRole) {
-            const { data, error } = await auth.db
-              .from("profiles")
-              .select("target_job_titles")
-              .eq("id", auth.userId)
-              .maybeSingle();
-            // Unread titles must never be overwritten: that would erase the learner's list.
-            if (error) throw error;
-            updates.target_job_titles = withTargetTitleFirst(data?.target_job_titles, args.targetRole);
-          }
-          const { error } = await auth.db.from("profiles").update(updates).eq("id", auth.userId);
-          profilePersisted = !error;
-        } catch {
-          /* best-effort — the older records above still hold the goal */
-        }
+      // The single active career_goal row: a record of what was set, and the
+      // last fallback assemble reads when the profile says nothing.
+      let rolePersisted = false;
+      try {
+        await auth.db
+          .from("ai_recommendations")
+          .update({ status: "expired" })
+          .eq("user_id", auth.userId)
+          .eq("recommendation_type", "career_goal")
+          .eq("status", "active");
+        const { error } = await auth.db.from("ai_recommendations").insert({
+          user_id: auth.userId,
+          recommendation_type: "career_goal",
+          title: `Goal: ${goalTitle}`,
+          description: `${args.targetField}${args.seniority ? ` · ${args.seniority}` : ""}`,
+          ai_reasoning: "Set by the learner via set_career_goal.",
+          status: "active",
+        });
+        rolePersisted = !error;
+      } catch {
+        /* best-effort */
       }
 
       return ok({
@@ -439,9 +448,10 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           interviewTypes: args.interviewTypes ?? null,
         },
         persisted: {
-          preferences: preferencesPersisted,
-          targetRole: args.targetRole ? rolePersisted : null,
           profile: profilePersisted,
+          level: levelPersisted,
+          goalRecord: rolePersisted,
+          preferences: preferencesPersisted,
         },
       });
     },
