@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -33,16 +33,30 @@ jobs:
         run: |
           docker build -t mcp:ci .
           start=$(date +%s%N)
-          docker run -d --name mcp -p 8787:8787 -e HORUS_MODE=mock -e RESEARCH_MODE=mock -e GROUNDING_MODE=mock mcp:ci
+          # A database address that refuses connections: real sign-in code runs,
+          # but nothing leaves the runner.
+          docker run -d --name mcp -p 8787:8787 -e HORUS_MODE=mock -e RESEARCH_MODE=mock -e GROUNDING_MODE=mock \
+            -e SUPABASE_URL=http://127.0.0.1:9 -e SUPABASE_ANON_KEY=ci mcp:ci
           for _ in $(seq 1 60); do
             if curl -fsS localhost:8787/health > /dev/null 2>&1; then
               echo "Healthy $(( ($(date +%s%N) - start) / 1000000 ))ms after start"
-              exit 0
+              break
             fi
             sleep 0.5
           done
-          docker logs mcp
-          exit 1
+          curl -fsS localhost:8787/health > /dev/null || { docker logs mcp; exit 1; }
+
+          # /health doesn't touch the database client, so it stayed green while
+          # every signed-in request crashed (supabase-js on Node 20). A made-up
+          # login must be turned away (401), not crash the request (500).
+          status=$(curl -s -o body.json -w '%{http_code}' -X POST localhost:8787/api/resources \
+            -H 'Content-Type: application/json' -H 'Authorization: Bearer not-a-real-token' -d '{}')
+          if [ "$status" != 401 ]; then
+            echo "::error::A signed-in request answered $status, expected 401: $(cat body.json)"
+            docker logs mcp
+            exit 1
+          fi
+          echo "Signed-in requests reach the sign-in check (401 for a made-up login)"
 
   # Every push to main that passes the checks ships to Azure Container Apps.
   #

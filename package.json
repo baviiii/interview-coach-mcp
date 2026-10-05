@@ -5,7 +5,7 @@
   "description": "Career-development MCP server: interviews, certificate-aware guidance, roadmaps, spaced-repetition upskilling. Domain brain for CareerCraft; LLM/RAG/graph connectivity goes through Horus.",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
