@@ -48,5 +48,11 @@ export const TABLES_USED: Record<string, readonly string[]> = {
   ],
 };
 
-/** Database functions called with `.rpc()`. */
-export const FUNCTIONS_USED: readonly string[] = ["ensure_skill_tags"];
+/**
+ * Database functions called with `.rpc()`, with the argument names the code
+ * passes. The database finds a function by its name *and* argument names, so a
+ * renamed argument breaks the call just like a dropped function.
+ */
+export const FUNCTIONS_USED: Record<string, readonly string[]> = {
+  ensure_skill_tags: ["p_names", "p_categories"],
+};

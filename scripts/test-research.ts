@@ -493,7 +493,7 @@ check("every .from() and .rpc() in src is in the schema map", () => {
   const fns = new Set(files.flatMap((s) => [...s.matchAll(/\.rpc\("([a-z_]+)"/g)].map((m) => m[1]!)));
   assert.ok(tables.size > 10, "found the tables");
   for (const t of tables) assert.ok(t in TABLES_USED, `table "${t}" is used but missing from src/schema-used.ts`);
-  for (const f of fns) assert.ok(FUNCTIONS_USED.includes(f), `function "${f}" is used but missing from src/schema-used.ts`);
+  for (const f of fns) assert.ok(f in FUNCTIONS_USED, `function "${f}" is used but missing from src/schema-used.ts`);
 });
 
 // 21) The skill flywheel's maths and category mapping.

@@ -5,8 +5,9 @@
  * Each column is asked for with zero rows (`?select=<col>&limit=0`) using the
  * public anon key. PostgREST validates the column before row-level security
  * applies, so a missing column answers 42703 and a missing table PGRST205 —
- * without reading anyone's data. A function is called with no arguments: a
- * missing one answers PGRST202, an existing one is refused for the anon role.
+ * without reading anyone's data. A function is called with its arguments set to
+ * null: a missing one answers PGRST202, an existing one is refused for the anon
+ * role.
  *
  *   npm run schema-check        (reads SUPABASE_URL / SUPABASE_ANON_KEY from .env)
  */
@@ -56,10 +57,13 @@ async function checkColumn(table: string, column: string): Promise<Outcome> {
   return { item, ok: false, detail: `unexpected ${r.status} ${r.code ?? ""} ${r.message ?? ""}`.trim() };
 }
 
-async function checkFunction(name: string): Promise<Outcome> {
-  const item = `function ${name}()`;
-  const r = await probe(`rpc/${name}`, { method: "POST", body: "{}" });
-  if (r.code === "PGRST202") return { item, ok: false, detail: "function does not exist" };
+async function checkFunction(name: string, args: readonly string[]): Promise<Outcome> {
+  const item = `function ${name}(${args.join(", ")})`;
+  // Called with every argument, as null: the database matches a function by its
+  // argument names, so `{}` would miss a function that takes any.
+  const body = JSON.stringify(Object.fromEntries(args.map((a) => [a, null])));
+  const r = await probe(`rpc/${name}`, { method: "POST", body });
+  if (r.code === "PGRST202") return { item, ok: false, detail: "function does not exist with these arguments" };
   if (r.status === 0) return { item, ok: false, detail: `unreachable: ${r.message}` };
   // Any other answer (permission denied for anon, argument errors) means it exists.
   return { item, ok: true, detail: "" };
@@ -74,7 +78,7 @@ async function inBatches<T>(jobs: Array<() => Promise<T>>, size = 8): Promise<T[
 
 const jobs = [
   ...Object.entries(TABLES_USED).flatMap(([table, columns]) => columns.map((c) => () => checkColumn(table, c))),
-  ...FUNCTIONS_USED.map((f) => () => checkFunction(f)),
+  ...Object.entries(FUNCTIONS_USED).map(([f, args]) => () => checkFunction(f, args)),
 ];
 const results = await inBatches(jobs);
 const missing = results.filter((r) => !r.ok);
