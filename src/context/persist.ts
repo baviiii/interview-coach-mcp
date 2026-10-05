@@ -1,12 +1,19 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { bandToProficiency } from "./assemble.js";
+import { skillLevel } from "./assemble.js";
+import { warnDb } from "./warn.js";
 
 /**
  * The personalization flywheel: every evaluated answer, drill result, and
  * earned certification updates the learner's skill matrix, which biases the
- * next questions, plans and recommendations. All writes are best-effort and
- * tolerate both user_skills shapes (skill_name TEXT vs skill_id FK).
+ * next questions, plans and recommendations.
+ *
+ * user_skills rows are keyed by skill_id into the shared skill_tags dictionary
+ * (CareerCraft's May canonicalisation dropped the old free-text skill_name).
+ * Names become ids through the ensure_skill_tags database function, which adds
+ * a new name to the dictionary safely — users can't write skill_tags directly.
+ * Writing skill_name kept failing after that migration, so for months no answer
+ * updated anyone's skills.
  */
 
 export interface SkillSignal {
@@ -26,11 +33,21 @@ export interface SkillPersistResult {
   newProficiency: number | null;
 }
 
-/** Best-effort writes stay best-effort, but never silent: one warn per miss. */
-function warnDb(op: string, detail: unknown): void {
-  const msg = (detail as { message?: string })?.message ?? String(detail);
-  console.warn(`[persist] ${op} failed (change not saved): ${msg}`);
+/** What user_skills.category accepts (a CHECK constraint); anything else is left unset. */
+const SKILL_CATEGORIES = ["technical", "behavioral", "leadership", "domain", "language"] as const;
+
+export function normalizeSkillCategory(category: string | undefined): string | undefined {
+  const c = category?.trim().toLowerCase();
+  if (!c) return undefined;
+  if ((SKILL_CATEGORIES as readonly string[]).includes(c)) return c;
+  if (/behaviou?r|soft|communicat|interpersonal|teamwork/.test(c)) return "behavioral";
+  if (/lead|manag/.test(c)) return "leadership";
+  if (/tech|tool|software|hard/.test(c)) return "technical";
+  return "domain";
 }
+
+/** How a name is matched to a dictionary entry: trimmed, single-spaced, case-insensitive. */
+const nameKey = (name: string) => name.replace(/\s+/g, " ").trim().toLowerCase();
 
 function proficiencyToBand(p: number): string {
   if (p >= 85) return "expert";
@@ -56,95 +73,130 @@ function trendFor(prev: number, next: number, prevTrend?: string): string {
   return prevTrend ?? "stable";
 }
 
+/** Skill names → skill_tags ids (keyed by nameKey), adding any the dictionary doesn't have yet. */
+export async function resolveSkillIds(
+  db: SupabaseClient,
+  signals: Array<{ name: string; category?: string }>,
+): Promise<Map<string, string>> {
+  const ids = new Map<string, string>();
+  if (signals.length === 0) return ids;
+  try {
+    const { data, error } = await db.rpc("ensure_skill_tags", {
+      p_names: signals.map((s) => s.name),
+      p_categories: signals.map((s) => normalizeSkillCategory(s.category) ?? null),
+    });
+    if (error) {
+      warnDb("ensure_skill_tags", error);
+      return ids;
+    }
+    for (const row of (data ?? []) as Array<{ requested: string; id: string }>) {
+      ids.set(nameKey(row.requested), row.id);
+    }
+  } catch (e) {
+    warnDb("ensure_skill_tags", e);
+  }
+  return ids;
+}
+
+/** The next level for one signal, from the current one. */
+export function nextLevel(prev: number, signal: SkillSignal): number {
+  let next = prev;
+  if (typeof signal.demonstrated === "number") next = blend(prev, Math.max(0, Math.min(100, signal.demonstrated)));
+  if (typeof signal.drillScore === "number") next = nudge(next, signal.drillScore);
+  if (typeof signal.floor === "number") next = Math.max(next, Math.min(100, signal.floor));
+  return next;
+}
+
+interface ExistingSkillRow {
+  skill_id: string;
+  proficiency?: string | null;
+  proficiency_level?: number | null;
+  trend?: string | null;
+  times_tested?: number | null;
+}
+
+/**
+ * Apply several signals in one round trip each way: resolve the names, read the
+ * current rows, upsert the new levels on (user_id, skill_id). Signals naming the
+ * same skill are applied in order. Returns one result per input signal.
+ */
+async function applySkillSignals(
+  db: SupabaseClient,
+  userId: string,
+  signals: SkillSignal[],
+): Promise<SkillPersistResult[]> {
+  const none: SkillPersistResult = { persisted: false, previousProficiency: null, newProficiency: null };
+  const valid = signals.map((s) => ({ ...s, name: s.name?.replace(/\s+/g, " ").trim() ?? "" }));
+  const named = valid.filter((s) => s.name);
+  if (named.length === 0) return signals.map(() => none);
+
+  const ids = await resolveSkillIds(db, named);
+  if (ids.size === 0) return signals.map(() => none);
+
+  const existing = new Map<string, ExistingSkillRow>();
+  try {
+    const { data, error } = await db
+      .from("user_skills")
+      .select("skill_id, proficiency, proficiency_level, trend, times_tested")
+      .eq("user_id", userId)
+      .in("skill_id", [...new Set(ids.values())]);
+    if (error) {
+      warnDb("user_skills read", error);
+      return signals.map(() => none);
+    }
+    for (const row of (data ?? []) as ExistingSkillRow[]) existing.set(row.skill_id, row);
+  } catch (e) {
+    warnDb("user_skills read", e);
+    return signals.map(() => none);
+  }
+
+  const nowIso = new Date().toISOString();
+  const rows = new Map<string, Record<string, unknown>>();
+  const results = valid.map((signal): SkillPersistResult => {
+    const skillId = signal.name ? ids.get(nameKey(signal.name)) : undefined;
+    if (!skillId) return none;
+    const current = existing.get(skillId);
+    const prev = current ? skillLevel(current) : 0;
+    const next = nextLevel(prev, signal);
+    const timesTested = (current?.times_tested ?? 0) + 1;
+    const category = normalizeSkillCategory(signal.category);
+    // Later signals for the same skill build on the earlier ones in this batch.
+    existing.set(skillId, { skill_id: skillId, proficiency_level: next, trend: current?.trend, times_tested: timesTested });
+    rows.set(skillId, {
+      user_id: userId,
+      skill_id: skillId,
+      proficiency_level: next,
+      proficiency: proficiencyToBand(next),
+      trend: trendFor(prev, next, current?.trend ?? undefined),
+      last_tested_at: nowIso,
+      times_tested: timesTested,
+      updated_at: nowIso,
+      ...(category ? { category } : {}),
+    });
+    return { persisted: true, previousProficiency: current ? prev : null, newProficiency: next };
+  });
+
+  try {
+    const { error } = await db.from("user_skills").upsert([...rows.values()], { onConflict: "user_id,skill_id" });
+    if (error) {
+      warnDb("user_skills upsert", error);
+      return signals.map(() => none);
+    }
+  } catch (e) {
+    warnDb("user_skills upsert", e);
+    return signals.map(() => none);
+  }
+  return results;
+}
+
 /** Apply one skill signal to user_skills. Best-effort: returns what happened. */
 export async function persistSkillSignal(
   db: SupabaseClient,
   userId: string,
   signal: SkillSignal,
 ): Promise<SkillPersistResult> {
-  const none: SkillPersistResult = { persisted: false, previousProficiency: null, newProficiency: null };
-  const name = signal.name?.trim();
-  if (!name) return none;
-
-  let rows: any[] = [];
-  try {
-    const { data, error } = await db.from("user_skills").select("*").eq("user_id", userId);
-    if (error) {
-      warnDb("user_skills read", error);
-      return none;
-    }
-    rows = data ?? [];
-  } catch (e) {
-    warnDb("user_skills read", e);
-    return none;
-  }
-
-  // Match by skill_name when the column exists; the FK shape (skill_id only)
-  // can't be matched by name without skill_tags writes, which RLS forbids.
-  const lower = name.toLowerCase();
-  const existing = rows.find((r) => typeof r.skill_name === "string" && r.skill_name.toLowerCase() === lower);
-
-  const prev: number = existing
-    ? typeof existing.proficiency_level === "number"
-      ? existing.proficiency_level
-      : bandToProficiency(existing.proficiency)
-    : 0;
-
-  let next = prev;
-  if (typeof signal.demonstrated === "number") next = blend(prev, Math.max(0, Math.min(100, signal.demonstrated)));
-  if (typeof signal.drillScore === "number") next = nudge(next, signal.drillScore);
-  if (typeof signal.floor === "number") next = Math.max(next, Math.min(100, signal.floor));
-  if (existing && next === prev && typeof signal.drillScore !== "number") {
-    // Still record the touch (last_tested_at / times_tested) below.
-  }
-
-  const richColumns = existing
-    ? {
-        has: (col: string) => col in existing,
-      }
-    : // Fresh table — write the profile shape (skill_name) plus the tracking
-      // columns; if the live table rejects unknown columns we retry minimal.
-      { has: (_col: string) => true };
-
-  const nowIso = new Date().toISOString();
-  const base: Record<string, unknown> = { user_id: userId, skill_name: name };
-  if (richColumns.has("category") && signal.category) base["category"] = signal.category;
-  if (richColumns.has("proficiency")) base["proficiency"] = proficiencyToBand(next);
-  if (richColumns.has("proficiency_level")) base["proficiency_level"] = next;
-  if (richColumns.has("trend")) base["trend"] = trendFor(prev, next, existing?.trend);
-  if (richColumns.has("last_tested_at")) base["last_tested_at"] = nowIso;
-  if (richColumns.has("times_tested")) base["times_tested"] = (existing?.times_tested ?? 0) + 1;
-  if (richColumns.has("updated_at")) base["updated_at"] = nowIso;
-
-  try {
-    if (existing) {
-      const { error } = await db.from("user_skills").update(base).eq("id", existing.id);
-      if (error) {
-        warnDb(`user_skills update (${name})`, error);
-        return { ...none, previousProficiency: prev };
-      }
-    } else {
-      let { error } = await db.from("user_skills").insert(base);
-      if (error) {
-        // Minimal profile-shape fallback (the fix-migration table).
-        const minimal = {
-          user_id: userId,
-          skill_name: name,
-          proficiency: proficiencyToBand(next),
-          ...(signal.category ? { category: signal.category } : {}),
-        };
-        ({ error } = await db.from("user_skills").insert(minimal));
-        if (error) {
-          warnDb(`user_skills insert (${name})`, error);
-          return none;
-        }
-      }
-    }
-    return { persisted: true, previousProficiency: existing ? prev : null, newProficiency: next };
-  } catch (e) {
-    warnDb(`user_skills write (${name})`, e);
-    return none;
-  }
+  const [result] = await applySkillSignals(db, userId, [signal]);
+  return result!;
 }
 
 /** Persist several signals; returns how many landed. */
@@ -153,12 +205,8 @@ export async function persistSkillSignals(
   userId: string,
   signals: SkillSignal[],
 ): Promise<number> {
-  let count = 0;
-  for (const s of signals) {
-    const r = await persistSkillSignal(db, userId, s);
-    if (r.persisted) count += 1;
-  }
-  return count;
+  const results = await applySkillSignals(db, userId, signals);
+  return results.filter((r) => r.persisted).length;
 }
 
 /** Bump engagement counters on user_patterns (streaks, totals). Best-effort. */

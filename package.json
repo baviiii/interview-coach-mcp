@@ -15,7 +15,8 @@
     "test": "tsx scripts/test-research.ts",
     "e2e": "tsx scripts/e2e.ts",
     "build": "tsc -p tsconfig.build.json",
-    "start:prod": "node --enable-source-maps dist/server.js"
+    "start:prod": "node --enable-source-maps dist/server.js",
+    "schema-check": "tsx scripts/schema-check.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { certStatus, matchCertification } from "../domain/certifications.js";
+import { goalForRequest, resolveGoal, type GoalSources } from "../domain/goal.js";
 import type {
   ApplicationsSnapshot,
   CareerGoal,
@@ -32,13 +33,13 @@ export async function assembleLearnerContext(
     patternsRes,
     scoresRes,
     certs,
-    goal,
+    goalRecords,
     resumeSummary,
     applications,
     milestonesRes,
     recentQuestionThemes,
   ] = await Promise.all([
-    db.from("profiles").select("ai_persona").eq("id", userId).maybeSingle(),
+    readProfile(db, userId),
     readSkills(db, userId),
     db.from("user_patterns").select("*").eq("user_id", userId).maybeSingle(),
     db
@@ -48,12 +49,21 @@ export async function assembleLearnerContext(
       .order("recorded_at", { ascending: false })
       .limit(10),
     readCertifications(db, userId),
-    readGoal(db, userId),
+    readGoalRecords(db, userId),
     readResumeSummary(db, userId),
     readApplications(db, userId),
     db.from("user_milestones").select("id", { count: "exact", head: true }).eq("user_id", userId),
     readRecentQuestions(db, userId),
   ]);
+
+  const profile = profileRes;
+  let goal: CareerGoal | null = null;
+  try {
+    goal = goalForRequest(resolveGoal({ profile, ...goalRecords }), opts);
+  } catch (e) {
+    // A goal is worth having, never worth failing every tool over.
+    console.warn(`[assemble] goal unavailable: ${(e as Error).message}`);
+  }
 
   const weakSkills = skills.filter((s) => s.proficiency < 60).slice(0, 5);
   const strongSkills = [...skills].filter((s) => s.proficiency >= 75).slice(0, 5);
@@ -75,7 +85,7 @@ export async function assembleLearnerContext(
 
   const ctx: LearnerContext = {
     userId,
-    persona: (profileRes.data as any)?.ai_persona ?? null,
+    persona: (profile?.ai_persona as LearnerContext["persona"]) ?? null,
     targetField: opts.field ?? goal?.targetField,
     targetSeniority: opts.seniority ?? goal?.seniority,
     skills,
@@ -92,18 +102,23 @@ export async function assembleLearnerContext(
     job: null,
   };
 
+  // A saved job is one of the learner's own job-tracker applications. It used to
+  // be a row in jobs_catalog, which CareerCraft dropped in September — after
+  // which every saved-job lookup quietly found nothing.
   if (opts.jobId) {
-    const { data: job } = await db
-      .from("jobs_catalog")
-      .select("id, title, company, location, full_description, description_snippet")
+    const { data: job, error: jobError } = await db
+      .from("job_applications")
+      .select("id, job_title, company, location, job_description")
       .eq("id", opts.jobId)
+      .eq("user_id", userId)
       .maybeSingle();
+    if (jobError) console.warn(`[assemble] job_applications read failed: ${jobError.message}`);
 
     if (job) {
       const { data: fit } = await db
         .from("job_fit_scores")
         .select("score, strengths, gaps")
-        .eq("jobs_catalog_id", opts.jobId)
+        .eq("application_id", opts.jobId)
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -111,10 +126,10 @@ export async function assembleLearnerContext(
 
       ctx.job = {
         jobId: job.id,
-        title: job.title,
+        title: job.job_title,
         company: job.company,
         location: job.location ?? undefined,
-        description: job.full_description ?? job.description_snippet ?? undefined,
+        description: job.job_description ?? undefined,
         fitScore: fit?.score ?? undefined,
         gaps: toStringArray(fit?.gaps),
         strengths: toStringArray(fit?.strengths),
@@ -130,49 +145,36 @@ export async function assembleLearnerContext(
  * proficiency_level INT; profile: skill_name TEXT + proficiency band). Read
  * whichever is live and normalize to SkillSnapshot.
  */
+/**
+ * The skill matrix: user_skills rows (keyed by skill_id since CareerCraft's May
+ * canonicalisation) joined to their names in the shared skill_tags dictionary.
+ */
 async function readSkills(db: SupabaseClient, userId: string): Promise<SkillSnapshot[]> {
   try {
     const { data, error } = await db
       .from("user_skills")
-      .select("skill_id, proficiency_level, trend, times_tested, last_tested_at, skill_tags ( name, category )")
-      .eq("user_id", userId)
-      .order("proficiency_level", { ascending: true });
-    if (!error && data && data.length > 0) {
-      return data
-        .filter((row: any) => row.skill_tags?.name)
-        .map((row: any) => ({
+      .select("skill_id, proficiency, proficiency_level, trend, times_tested, last_tested_at, skill_tags ( name, category )")
+      .eq("user_id", userId);
+    if (error) {
+      console.warn(`[assemble] user_skills read failed: ${error.message}`);
+      return [];
+    }
+    return (data ?? [])
+      .filter((row: any) => row.skill_tags?.name)
+      .map(
+        (row: any): SkillSnapshot => ({
           skillId: row.skill_id ?? undefined,
           name: row.skill_tags.name,
           category: row.skill_tags.category ?? undefined,
-          proficiency: row.proficiency_level ?? 0,
+          proficiency: skillLevel(row),
           trend: (row.trend ?? "stable") as SkillSnapshot["trend"],
           timesTested: row.times_tested ?? 0,
           lastTestedAt: row.last_tested_at ?? null,
-        }));
-    }
-    if (error) throw error;
-  } catch {
-    /* fall through to the flexible shape */
-  }
-
-  try {
-    const { data } = await db.from("user_skills").select("*").eq("user_id", userId);
-    return (data ?? [])
-      .map((row: any): SkillSnapshot | null => {
-        const name = row.skill_name ?? null;
-        if (!name) return null;
-        return {
-          name,
-          category: row.category ?? undefined,
-          proficiency: row.proficiency_level ?? bandToProficiency(row.proficiency),
-          trend: (row.trend ?? "stable") as SkillSnapshot["trend"],
-          timesTested: row.times_tested ?? 0,
-          lastTestedAt: row.last_tested_at ?? null,
-        };
-      })
-      .filter((s): s is SkillSnapshot => s !== null)
+        }),
+      )
       .sort((a, b) => a.proficiency - b.proficiency);
-  } catch {
+  } catch (e) {
+    console.warn(`[assemble] user_skills read failed: ${(e as Error).message}`);
     return [];
   }
 }
@@ -190,6 +192,24 @@ export function bandToProficiency(band: unknown): number {
     default:
       return 0;
   }
+}
+
+/**
+ * A user_skills row's level, 0–100. Onboarding and Settings record only the
+ * `proficiency` band, and `proficiency_level` defaults to 0, so reading the
+ * number alone made every self-reported skill look like a 0/100 weakness and
+ * aimed interviews at people's strengths. The number is trusted once this
+ * server has actually tested the skill; until then the band is the evidence.
+ */
+export function skillLevel(row: {
+  proficiency_level?: unknown;
+  proficiency?: unknown;
+  times_tested?: unknown;
+}): number {
+  const tested = typeof row.times_tested === "number" && row.times_tested > 0;
+  if (tested && typeof row.proficiency_level === "number") return row.proficiency_level;
+  if (typeof row.proficiency === "string" && row.proficiency) return bandToProficiency(row.proficiency);
+  return typeof row.proficiency_level === "number" ? row.proficiency_level : 0;
 }
 
 async function readCertifications(db: SupabaseClient, userId: string): Promise<CertificationSnapshot[]> {
@@ -219,31 +239,46 @@ async function readCertifications(db: SupabaseClient, userId: string): Promise<C
 }
 
 /**
- * Career goal = user_preferences (field/seniority/role type) + the latest
- * active "career_goal" recommendation (free-text target role, written by
- * set_career_goal — user_preferences has no role column).
+ * The older goal records — user_preferences and the active "career_goal"
+ * recommendation — which only matter when the profile (read once, above) says
+ * nothing. Precedence lives in `resolveGoal`; each read here is best-effort.
  */
-async function readGoal(db: SupabaseClient, userId: string): Promise<CareerGoal | null> {
-  let goal: CareerGoal | null = null;
-  try {
-    const { data } = await db
+/**
+ * The profile columns this server uses, and only those: the row also holds
+ * phone, bio and salary, which no tool needs on every call. A deployment
+ * missing one of them falls back to the whole row rather than losing it all.
+ */
+async function readProfile(db: SupabaseClient, userId: string): Promise<Record<string, unknown> | null> {
+  const named = await db
+    .from("profiles")
+    .select("ai_persona, target_job_titles, current_job_title, career_level")
+    .eq("id", userId)
+    .maybeSingle()
+    .then((r) => r, () => ({ data: null, error: new Error("profiles read failed") }));
+  if (!named.error) return (named.data as Record<string, unknown> | null) ?? null;
+  const whole = await db
+    .from("profiles")
+    .select("*")
+    .eq("id", userId)
+    .maybeSingle()
+    .then((r) => r.data, () => null);
+  return (whole as Record<string, unknown> | null) ?? null;
+}
+
+async function readGoalRecords(
+  db: SupabaseClient,
+  userId: string,
+): Promise<Pick<GoalSources, "prefs" | "goalTitle">> {
+  const [prefs, goalRow] = await Promise.all([
+    db
       .from("user_preferences")
-      .select("preferred_field, seniority_level, job_role_type, interview_types")
+      // "*": preferred_field and seniority_level were dropped from CareerCraft's
+      // schema, and naming them made this read fail on every call.
+      .select("*")
       .eq("user_id", userId)
-      .maybeSingle();
-    if (data) {
-      goal = {
-        targetField: data.preferred_field ?? undefined,
-        seniority: data.seniority_level ?? undefined,
-        jobRoleType: data.job_role_type ?? undefined,
-        interviewTypes: Array.isArray(data.interview_types) ? data.interview_types : undefined,
-      };
-    }
-  } catch {
-    /* best-effort */
-  }
-  try {
-    const { data } = await db
+      .maybeSingle()
+      .then(({ data }) => data, () => null),
+    db
       .from("ai_recommendations")
       .select("title")
       .eq("user_id", userId)
@@ -251,14 +286,10 @@ async function readGoal(db: SupabaseClient, userId: string): Promise<CareerGoal 
       .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(1)
-      .maybeSingle();
-    if (data?.title) {
-      goal = { ...(goal ?? {}), targetRole: String(data.title).replace(/^Goal:\s*/i, "") };
-    }
-  } catch {
-    /* best-effort */
-  }
-  return goal;
+      .maybeSingle()
+      .then(({ data }) => data, () => null),
+  ]);
+  return { prefs, goalTitle: goalRow?.title };
 }
 
 async function readResumeSummary(db: SupabaseClient, userId: string): Promise<string | null> {

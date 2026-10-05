@@ -11,7 +11,8 @@ import {
   formatCredentialCandidates,
   matchCertification,
 } from "../domain/certifications.js";
-import type { FieldProfile } from "../domain/field-profile.js";
+import { describeInterviewStyle, type FieldProfile } from "../domain/field-profile.js";
+import { toStoredLevel, withTargetTitleFirst } from "../domain/goal.js";
 import {
   careerGuidancePrompt,
   careerRoadmapPrompt,
@@ -207,7 +208,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           intents: ["credential", "fact"],
           max: 5,
         }),
-        resolveFieldProfile(horus, field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+        resolveFieldProfile(horus, field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
       const candidates = credentialLines(ctx, research, profile, {
         seniority: args.seniority,
@@ -355,51 +356,87 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Set or update the career goal",
       description:
-        "Persists the learner's target field, role and seniority so every other tool (questions, plans, guidance, recommendations) conditions on it. The goal IS the personalization anchor.",
+        "Persists the learner's target field, role and seniority so every other tool (questions, plans, guidance, recommendations) conditions on it. The goal IS the personalization anchor. The goal becomes the learner's first target job title, which the web app and every tool read first: pass targetRole as a job title (e.g. 'ICU nurse'); without one, targetField is used. seniority is saved as the profile's career level.",
       inputSchema: S.setCareerGoalInput,
     },
     async (args) => {
-      let preferencesPersisted = false;
+      // What the learner is going for: the job title when given, otherwise the
+      // field. A field-only goal has to land somewhere that's read back, and the
+      // profile's target titles are the only such place left — CareerCraft
+      // dropped user_preferences.preferred_field and seniority_level.
+      const goalTitle = args.targetRole ?? args.targetField;
+      const level = toStoredLevel(args.seniority);
+
+      // user_preferences keeps only what it still has columns for.
+      let preferencesPersisted: boolean | null = null;
+      if (args.jobRoleType || args.interviewTypes) {
+        try {
+          const { error } = await auth.db.from("user_preferences").upsert(
+            {
+              user_id: auth.userId,
+              ...(args.jobRoleType ? { job_role_type: args.jobRoleType } : {}),
+              ...(args.interviewTypes ? { interview_types: args.interviewTypes } : {}),
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "user_id" },
+          );
+          preferencesPersisted = !error;
+        } catch {
+          preferencesPersisted = false;
+        }
+      }
+
+      // The profile is the source of truth the web app and assemble both read.
+      // Each write stands alone, so a failed titles read can't also lose the level.
+      let profilePersisted = false;
       try {
-        const { error } = await auth.db.from("user_preferences").upsert(
-          {
-            user_id: auth.userId,
-            preferred_field: args.targetField,
-            ...(args.seniority ? { seniority_level: args.seniority } : {}),
-            ...(args.jobRoleType ? { job_role_type: args.jobRoleType } : {}),
-            ...(args.interviewTypes ? { interview_types: args.interviewTypes } : {}),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "user_id" },
-        );
-        preferencesPersisted = !error;
+        const { data, error } = await auth.db
+          .from("profiles")
+          .select("target_job_titles")
+          .eq("id", auth.userId)
+          .maybeSingle();
+        // Unread titles must never be overwritten: that would erase the learner's list.
+        if (error) throw error;
+        const { error: writeError } = await auth.db
+          .from("profiles")
+          .update({ target_job_titles: withTargetTitleFirst(data?.target_job_titles, goalTitle) })
+          .eq("id", auth.userId);
+        profilePersisted = !writeError;
       } catch {
         /* best-effort */
       }
 
-      // user_preferences has no target-role column — the role lives as the
-      // single active career_goal recommendation (assemble reads it back).
-      let rolePersisted = false;
-      if (args.targetRole) {
+      let levelPersisted: boolean | null = null;
+      if (level) {
         try {
-          await auth.db
-            .from("ai_recommendations")
-            .update({ status: "expired" })
-            .eq("user_id", auth.userId)
-            .eq("recommendation_type", "career_goal")
-            .eq("status", "active");
-          const { error } = await auth.db.from("ai_recommendations").insert({
-            user_id: auth.userId,
-            recommendation_type: "career_goal",
-            title: `Goal: ${args.targetRole}`,
-            description: `${args.targetField}${args.seniority ? ` · ${args.seniority}` : ""}`,
-            ai_reasoning: "Set by the learner via set_career_goal.",
-            status: "active",
-          });
-          rolePersisted = !error;
+          const { error } = await auth.db.from("profiles").update({ career_level: level }).eq("id", auth.userId);
+          levelPersisted = !error;
         } catch {
-          /* best-effort */
+          levelPersisted = false;
         }
+      }
+
+      // The single active career_goal row: a record of what was set, and the
+      // last fallback assemble reads when the profile says nothing.
+      let rolePersisted = false;
+      try {
+        await auth.db
+          .from("ai_recommendations")
+          .update({ status: "expired" })
+          .eq("user_id", auth.userId)
+          .eq("recommendation_type", "career_goal")
+          .eq("status", "active");
+        const { error } = await auth.db.from("ai_recommendations").insert({
+          user_id: auth.userId,
+          recommendation_type: "career_goal",
+          title: `Goal: ${goalTitle}`,
+          description: `${args.targetField}${args.seniority ? ` · ${args.seniority}` : ""}`,
+          ai_reasoning: "Set by the learner via set_career_goal.",
+          status: "active",
+        });
+        rolePersisted = !error;
+      } catch {
+        /* best-effort */
       }
 
       return ok({
@@ -410,7 +447,44 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           jobRoleType: args.jobRoleType ?? null,
           interviewTypes: args.interviewTypes ?? null,
         },
-        persisted: { preferences: preferencesPersisted, targetRole: args.targetRole ? rolePersisted : null },
+        persisted: {
+          profile: profilePersisted,
+          level: levelPersisted,
+          goalRecord: rolePersisted,
+          preferences: preferencesPersisted,
+        },
+      });
+    },
+  );
+
+  // ── describe_field ──────────────────────────────────────────────────────
+  server.registerTool(
+    "describe_field",
+    {
+      title: "Describe a job",
+      description:
+        "Turns what a learner typed ('sparky', 'nurse icu') into the standard job title, what its interviews focus on, the licences it expects in this market and what each career stage is called — for confirming a role before saving it. known=false means it isn't a recognisable job, and nothing about it is invented. Errors when the job couldn't be checked, so a failed lookup is never mistaken for 'not a job'.",
+      inputSchema: S.describeFieldInput,
+    },
+    async (args) => {
+      const profile = await resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt });
+      // A neutral profile is either an answer ("not a job") or a failed lookup.
+      // Only the first may come back as known=false; the second must fail, so the
+      // caller retries rather than telling the learner their job isn't real.
+      if (profile.source === "neutral" && !profile.notOccupation) {
+        return err("Couldn't check that job right now. Try again in a moment.");
+      }
+      const known = profile.source === "model";
+      return ok({
+        input: args.field,
+        known,
+        canonicalTitle: profile.canonicalTitle,
+        interviewStyle: known ? describeInterviewStyle(profile) : null,
+        keySkills: profile.keySkills,
+        credentials: [...profile.credentials]
+          .sort((a, b) => Number(b.required) - Number(a.required))
+          .map((c) => ({ ...c, source: "model knowledge — confirm with the issuing body" })),
+        levels: profile.levels,
       });
     },
   );
@@ -442,7 +516,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
           intents: ["credential", "experience", "fact"],
           max: 4,
         }),
-        resolveFieldProfile(horus, field, { role: targetRole, userRef: auth.userId, userToken: auth.jwt }),
+        resolveFieldProfile(horus, field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
 
       const skeleton = roadmapSkeleton(args.horizonWeeks ?? 12, args.hoursPerWeek ?? 6);

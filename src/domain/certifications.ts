@@ -8,7 +8,7 @@
  */
 
 import type { ResearchSnippet } from "../adapters/research/port.js";
-import type { ProfileCredential } from "./field-profile.js";
+import { seniorityBand, type ProfileCredential, type SeniorityBand } from "./field-profile.js";
 import type { CertificationStatus } from "../types.js";
 
 export type CertLevel = "foundational" | "associate" | "professional" | "specialty" | "expert";
@@ -360,23 +360,16 @@ export function certStatus(expiryDate?: string | null, now = new Date()): Certif
   return exp <= soon ? "expiring_soon" : "active";
 }
 
-const LEVEL_FIT: Record<"junior" | "mid" | "senior" | "manager", CertLevel[]> = {
+const LEVEL_FIT: Record<SeniorityBand, CertLevel[]> = {
   junior: ["foundational", "associate"],
   mid: ["associate", "professional"],
   senior: ["professional", "specialty", "expert"],
+  lead: ["professional", "specialty", "expert"],
   manager: ["professional", "expert"],
 };
 
 function levelFitFor(level: CertLevel, seniority?: string): "ideal" | "stretch" | "adjacent" {
-  const s = seniority ?? "";
-  const band = /manager|director|head|chief/i.test(s)
-    ? "manager"
-    : /senior|lead|staff|principal/i.test(s)
-      ? "senior"
-      : /junior|entry|intern|graduate|trainee|apprentice/i.test(s)
-        ? "junior"
-        : "mid";
-  const ideal = LEVEL_FIT[band];
+  const ideal = LEVEL_FIT[seniorityBand(seniority)];
   if (ideal.includes(level)) return "ideal";
   return ideal[ideal.length - 1] === "associate" && level === "professional" ? "stretch" : "adjacent";
 }

@@ -9,7 +9,7 @@
  * behavioral question at all. Slots make that impossible.
  */
 
-import { neutralProfile, seniorityWeights, type FieldProfile } from "./field-profile.js";
+import { neutralProfile, seniorityBand, seniorityWeights, type FieldProfile } from "./field-profile.js";
 import type { Difficulty } from "./taxonomy.js";
 import type { LearnerContext } from "../types.js";
 
@@ -55,8 +55,9 @@ const STAGE_INTENT: Record<InterviewStage, string> = {
 
 /** Difficulty ramp: warm up, build, peak near the end. Ceiling follows seniority. */
 function rampDifficulty(position: number, total: number, seniority: string): Difficulty {
-  const senior = /senior|lead|staff|principal|manager|director|head/i.test(seniority);
-  const junior = /junior|entry|intern|graduate|associate|trainee/i.test(seniority);
+  const band = seniorityBand(seniority);
+  const senior = band === "senior" || band === "lead" || band === "manager";
+  const junior = band === "junior";
   const progress = total <= 1 ? 0.5 : position / (total - 1); // 0 → 1
 
   if (junior) return progress < 0.5 ? "easy" : "medium";

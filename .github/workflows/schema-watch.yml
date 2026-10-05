@@ -1,0 +1,27 @@
+name: Schema watch
+
+# CareerCraft's migrations live in another repo, so a column dropped there breaks
+# this server without any push here — which is how skill and goal saving broke in
+# May unnoticed. Check the live database every day; GitHub emails the repo owner
+# when a scheduled run fails.
+on:
+  schedule:
+    - cron: "17 21 * * *" # 07:17 in Adelaide/Melbourne (AEST)
+  workflow_dispatch:
+
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run schema-check
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          # Unlike CI, a missing configuration here is a failure: the watch is the point.
+          SCHEMA_CHECK_REQUIRED: "1"

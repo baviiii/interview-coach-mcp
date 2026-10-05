@@ -143,7 +143,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
           intents: ["question", "experience"],
           max: 4,
         }),
-        resolveFieldProfile(horus, args.field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+        resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
       const blueprint = interviewBlueprint({
         field: args.field,
@@ -221,7 +221,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
           intents: ["question", "experience"],
           max: 4,
         }),
-        resolveFieldProfile(horus, args.field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+        resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
       const blueprint = interviewBlueprint({
         field: args.field,
@@ -400,7 +400,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
           intents: ["question", "experience"],
           max: 3,
         }),
-        resolveFieldProfile(horus, args.field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+        resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
 
       // Keep following the loop's shape: the slot we'd be on now decides the
@@ -481,7 +481,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
           intents: ["experience", "question"],
           max: 3,
         }),
-        resolveFieldProfile(horus, args.field, { role: ctx.goal?.targetRole, userRef: auth.userId, userToken: auth.jwt }),
+        resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
       const blueprint = interviewBlueprint({
         field: args.field,
