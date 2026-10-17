@@ -54,6 +54,16 @@ export interface JobContext {
   strengths?: string[];
 }
 
+/** The learner's best story for one competency (interview_stories). */
+export interface StorySnapshot {
+  /** A competency key from domain/competencies.ts ("ownership", "aps:results", "nsw:deliver"). */
+  competency: string;
+  title: string;
+  /** 0–10, the best this story has scored. */
+  bestScore: number | null;
+  timesPractised: number;
+}
+
 export interface LearnerContext {
   userId: string;
   /** AI-derived persona from onboarding (profiles.ai_persona). */
@@ -76,6 +86,8 @@ export interface LearnerContext {
   /** Questions this learner has already been asked in recent sessions — fed to
    *  generation as a do-not-repeat list so every session isn't the same one. */
   recentQuestionThemes?: string[];
+  /** Their story library: behavioural rounds aim at competencies with no or weak stories. */
+  stories?: StorySnapshot[];
   patterns?: {
     overallTrend?: string;
     strongestQuestionType?: string;

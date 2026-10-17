@@ -7,7 +7,20 @@ import { assembleLearnerContext } from "../context/assemble.js";
 import { resolveFieldProfile } from "../context/field-profile.js";
 import { persistSkillSignals, touchPracticePatterns } from "../context/persist.js";
 import { focusSkill, nextDifficulty, shouldOfferHint } from "../domain/adaptive.js";
-import { interviewBlueprint, stageCoverage, type QuestionSlot } from "../domain/interview-loop.js";
+import { ownedJobId, saveAnswerDetail, saveStory, tagSession, type StoryOutcome } from "../context/interview-store.js";
+import { competencyLabel, competencySet, isCompetencyKey } from "../domain/competencies.js";
+import {
+  alignToBlueprint,
+  alignToSlot,
+  interviewBlueprint,
+  lengthCheck,
+  readWordBand,
+  slotDefaults,
+  stageCoverage,
+  type QuestionSlot,
+  type RoundType,
+} from "../domain/interview-loop.js";
+import { buildScore, locateQuotes, ownershipCounts, rubricFor } from "../domain/scoring.js";
 import {
   evaluateAnswerPrompt,
   finalEvaluationPrompt,
@@ -152,6 +165,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         focusAreas: args.focusAreas,
         ctx,
         profile,
+        roundType: args.roundType,
+        framework: args.framework,
+        frameworkLevel: args.frameworkLevel,
       });
       const { system, user } = generateQuestionsPrompt({
         blueprint,
@@ -172,8 +188,11 @@ Weight rounds toward the intersection of the role's real interview structure (ab
 
         userToken: auth.jwt,
       });
+      const data = res.data as { questions?: unknown };
       return ok({
         ...(res.data as object),
+        questions: alignToBlueprint(data.questions, blueprint),
+        roundType: blueprint.roundType,
         blueprint: blueprint.slots,
         _meta: { model: res.model, behavioralCount: blueprint.behavioralCount, research: researchMeta(research) },
       });
@@ -189,6 +208,13 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       inputSchema: S.startSessionInput,
     },
     async (args) => {
+      const roundType: RoundType = args.roundType ?? "full";
+      // Realistic mode asks for one question now and the rest adaptively, but
+      // that one must be slot 1 of the round actually planned (the pitch of a
+      // phone screen, the warm-up of a full loop), not of a one-question loop.
+      const generateNow = args.questionCount ?? 6;
+      const planned = Math.max(args.plannedCount ?? generateNow, generateNow);
+
       let sessionId: string | null = null;
       try {
         // interview_sessions.field is NOT NULL in CareerCraft's schema.
@@ -205,6 +231,44 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         sessionId = data?.id ?? null;
       } catch {
         /* base interview_sessions columns vary — best-effort; flow continues */
+      }
+      if (sessionId) {
+        await tagSession(auth.db, sessionId, {
+          roundType,
+          framework: args.framework,
+          jobApplicationId: await ownedJobId(auth.db, auth.userId, args.jobId),
+        });
+      }
+
+      // Practising a question again: ask exactly what they chose, no generation.
+      if (args.fixedQuestions?.length) {
+        const questions = args.fixedQuestions.map((q, i) => {
+          const defaults = slotDefaults(q.stage, q.type);
+          const competency = isCompetencyKey(q.competency) ? q.competency : undefined;
+          return {
+            id: i + 1,
+            question: q.question,
+            stage: defaults.stage,
+            type: q.type ?? (defaults.stage === "domain" ? "technical" : "behavioral"),
+            difficulty: q.difficulty ?? "medium",
+            category: q.type ?? defaults.stage,
+            expectedTopics: q.expectedTopics ?? [],
+            timeAllocationMinutes: defaults.minutes,
+            ...(defaults.targetWords ? { targetWords: defaults.targetWords } : {}),
+            ...(competency ? { competency, competencyLabel: competencyLabel(competency, args.seniority) } : {}),
+            whyThisQuestion: "You chose to practise this one again.",
+            followUps: [],
+            signalsSought: [],
+          };
+        });
+        if (sessionId) {
+          try {
+            await auth.db.from("interview_sessions").update({ questions, question_count: questions.length }).eq("id", sessionId);
+          } catch {
+            /* best-effort */
+          }
+        }
+        return ok({ sessionId, roundType, questions, blueprint: [], _meta: { persisted: sessionId !== null, fixed: true } });
       }
 
       const ctx = await assembleLearnerContext(auth.db, auth.userId, {
@@ -223,14 +287,19 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         }),
         resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
-      const blueprint = interviewBlueprint({
+      const fullPlan = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
-        questionCount: args.questionCount ?? 6,
+        questionCount: planned,
         focusAreas: args.focusAreas,
         ctx,
         profile,
+        roundType,
+        framework: args.framework,
+        frameworkLevel: args.frameworkLevel,
+        firstCompetency: args.competency,
       });
+      const blueprint = { ...fullPlan, slots: fullPlan.slots.slice(0, generateNow) };
       const { system, user } = generateQuestionsPrompt({
         blueprint,
         jobDescription: args.jobDescription,
@@ -249,12 +318,13 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         userToken: auth.jwt,
       });
       const data = res.data as { questions?: unknown; analysis?: unknown };
+      const questions = alignToBlueprint(data.questions, blueprint);
 
-      if (sessionId && Array.isArray(data.questions)) {
+      if (sessionId && questions.length) {
         try {
           await auth.db
             .from("interview_sessions")
-            .update({ questions: data.questions, question_count: data.questions.length })
+            .update({ questions, question_count: questions.length })
             .eq("id", sessionId);
         } catch {
           /* best-effort */
@@ -263,9 +333,10 @@ Weight rounds toward the intersection of the role's real interview structure (ab
 
       return ok({
         sessionId,
+        roundType,
         analysis: data.analysis,
-        questions: data.questions,
-        blueprint: blueprint.slots,
+        questions,
+        blueprint: fullPlan.slots,
         _meta: {
           model: res.model,
           persisted: sessionId !== null,
@@ -295,20 +366,45 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       // The frontend doesn't always pass type/expectedTopics. Recover them from
       // the question we generated for this session rather than evaluating blind.
       const planned = matchStoredQuestion(stored, args.questionId, args.questionText);
-      const questionType = args.questionType ?? planned?.type ?? planned?.stage;
+      // The slot is the contract, so the stored type wins over whatever the
+      // client echoes back; the client's value covers sessions stored before
+      // questions were aligned to their slots.
+      const questionType = planned?.type ?? args.questionType ?? planned?.stage;
       const expectedTopics = args.expectedTopics ?? planned?.expectedTopics;
+      const roundType = args.roundType ?? inferRoundType(stored);
+      const length = lengthCheck(args.answerText, readWordBand(planned?.targetWords));
+      const rubric = rubricFor(questionType, { stage: planned?.stage, roundType });
+      const ownership = rubric.star ? ownershipCounts(args.answerText) : null;
+      // Story questions are filed under a competency: the one the slot named, or
+      // (a warm-up, an older session) the one the evaluator picks from the set.
+      const slotCompetency = rubric.star && isCompetencyKey(planned?.competency) ? planned!.competency! : null;
+      const choices = rubric.star && !slotCompetency
+        ? competencySet({ framework: args.framework, seniority: args.seniority }).map((c) => ({ key: c.key, label: c.label }))
+        : undefined;
+      const attempt = args.attempt ?? 1;
 
       const { system, user } = evaluateAnswerPrompt({
         field: args.field,
         seniority: args.seniority,
         question: args.questionText,
         questionType,
+        stage: planned?.stage,
         answer: args.answerText,
         expectedTopics,
-        transcript: transcript.map((t) => ({ question: t.question, answer: t.answer, score: t.score })),
+        // Earlier questions only: a retry's earlier attempt goes in as "previous".
+        transcript: latestPerQuestion(transcript)
+          .filter((t) => !sameQuestion(t.question, args.questionText))
+          .map((t) => ({ question: t.question, answer: t.answer, score: t.score })),
         ctx,
+        roundType,
+        length,
+        ownership,
+        previous: args.previousAnswer ? { answer: args.previousAnswer, score: args.previousScore ?? null, attempt } : null,
+        competency: slotCompetency ? { key: slotCompetency, label: competencyLabel(slotCompetency, args.seniority) } : null,
+        competencyChoices: choices,
+        framework: args.framework,
       });
-      const res = await horus.infer<{ score?: number }>({
+      const res = await horus.infer<EvaluationData>({
         task: "interview.evaluate_answer",
         system,
         messages: [{ role: "user", content: user }],
@@ -320,21 +416,57 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         userToken: auth.jwt,
       });
 
+      // The model scored the dimensions; the overall score is ours to compute,
+      // so the learner can see exactly how it was made.
+      const scoring = buildScore(rubric, res.data.scoreBreakdown, res.data.cap, res.data.score);
+      const highlights = rubric.star ? locateQuotes(args.answerText, res.data.starQuotes) : [];
+      const evaluation = { ...res.data, score: scoring.final, modelScore: num(res.data.score) };
+      const improvement =
+        typeof args.previousScore === "number" ? { from: args.previousScore, to: scoring.final, attempt } : null;
+
       let persisted = false;
+      let answerId: string | null = null;
       try {
-        await auth.db.from("interview_answers").insert({
-          session_id: args.sessionId,
-          user_id: auth.userId,
-          question_id: args.questionId ?? null,
-          question_text: args.questionText,
-          question_type: questionType ?? null,
-          answer_text: args.answerText,
-          overall_score: num(res.data.score),
-          time_taken_seconds: args.timeTakenSeconds ?? null,
-        });
-        persisted = true;
+        const { data: row, error } = await auth.db
+          .from("interview_answers")
+          .insert({
+            session_id: args.sessionId,
+            user_id: auth.userId,
+            question_id: args.questionId ?? null,
+            question_text: args.questionText,
+            question_type: questionType ?? null,
+            answer_text: args.answerText,
+            overall_score: scoring.final,
+            time_taken_seconds: args.timeTakenSeconds ?? null,
+          })
+          .select("id")
+          .single();
+        persisted = !error;
+        answerId = (row as { id?: string } | null)?.id ?? null;
       } catch {
         /* best-effort */
+      }
+      if (answerId) {
+        await saveAnswerDetail(auth.db, answerId, {
+          evaluation: { ...evaluation, scoring, highlights, ownership, lengthCheck: length, competency: slotCompetency },
+          attempt,
+        });
+      }
+
+      // The story library: their best version of each competency's story.
+      let story: StoryOutcome | null = null;
+      const storyCompetency = slotCompetency ?? (isCompetencyKey(res.data.competency) ? res.data.competency : null);
+      const storyTitle = typeof res.data.storyTitle === "string" ? res.data.storyTitle.trim().slice(0, 120) : "";
+      if (rubric.star && storyCompetency && storyTitle && scoring.final > 0) {
+        story = await saveStory(auth.db, auth.userId, {
+          competency: storyCompetency,
+          title: storyTitle,
+          answer: args.answerText,
+          score: scoring.final,
+          star: res.data.starBreakdown ?? null,
+          sessionId: args.sessionId,
+          seniority: args.seniority,
+        });
       }
 
       // Flywheel: demonstrated skill levels from this answer update the matrix,
@@ -367,7 +499,17 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       } catch {
         /* grounding best-effort */
       }
-      return ok({ evaluation: res.data, proof, _meta: { model: res.model, persisted } });
+      return ok({
+        evaluation,
+        scoring,
+        highlights,
+        ownership,
+        lengthCheck: length,
+        story,
+        improvement,
+        proof,
+        _meta: { model: res.model, persisted },
+      });
     },
   );
 
@@ -405,19 +547,25 @@ Weight rounds toward the intersection of the role's real interview structure (ab
 
       // Keep following the loop's shape: the slot we'd be on now decides the
       // stage and type, so the adaptive path can't quietly drop the behavioural
-      // half of the interview.
+      // half of the interview. Position counts questions ASKED (the session's
+      // stored list), not answered — a skipped question never reaches
+      // interview_answers, and counting answers would ask that slot again.
+      const position = Math.max(stored.length, transcript.length);
+      const roundType = args.roundType ?? inferRoundType(stored);
       const blueprint = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
-        // Size the loop to the session actually in progress, so a long session
-        // doesn't get pinned to the last slot once it runs past the default.
-        questionCount: Math.max(stored.length, transcript.length + 1, 6),
+        // Size the loop to the round planned, or to the session actually in
+        // progress if it has run past that, so it never pins to the last slot.
+        questionCount: Math.max(args.plannedCount ?? 6, position + 1),
         focusAreas: args.focusAreas,
         ctx,
         profile,
+        roundType,
+        framework: args.framework,
+        frameworkLevel: args.frameworkLevel,
       });
-      const slot: QuestionSlot | undefined =
-        blueprint.slots[Math.min(transcript.length, blueprint.slots.length - 1)];
+      const slot: QuestionSlot | undefined = blueprint.slots[Math.min(position, blueprint.slots.length - 1)];
 
       const last = transcript[transcript.length - 1];
       const { system, user } = nextQuestionPrompt({
@@ -431,6 +579,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         covered,
         ctx,
         research,
+        roundType,
+        framework: args.framework,
+        frameworkLevel: args.frameworkLevel,
       });
 
       const res = await horus.infer({
@@ -444,12 +595,19 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         userToken: auth.jwt,
       });
 
+      // The adaptive difficulty is this tool's call, not the slot's ramp; the
+      // rest of the slot (stage, type, minutes, length band) still holds.
+      const question =
+        res.data && typeof res.data === "object"
+          ? { ...alignToSlot(res.data as object, slot), difficulty, id: position + 1 }
+          : res.data;
+
       // Append to the session so finish_interview sees the full planned loop,
       // not just the questions that happened to be answered.
-      await appendSessionQuestion(auth.db, args.sessionId, res.data);
+      await appendSessionQuestion(auth.db, args.sessionId, question);
 
       return ok({
-        question: res.data,
+        question,
         difficulty,
         stage: slot?.stage,
         focusSkill: slot?.targetSkill ?? skill,
@@ -468,10 +626,12 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       inputSchema: S.finishInput,
     },
     async (args) => {
-      const [ctx, transcript] = await Promise.all([
+      const [ctx, transcript, stored] = await Promise.all([
         assembleLearnerContext(auth.db, auth.userId, { field: args.field, seniority: args.seniority }),
         readTranscript(auth.db, args.sessionId),
+        readSessionQuestions(auth.db, args.sessionId),
       ]);
+      const roundType = args.roundType ?? inferRoundType(stored);
 
       const [research, profile] = await Promise.all([
         researchSafely(deps.research, {
@@ -486,18 +646,34 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       const blueprint = interviewBlueprint({
         field: args.field,
         seniority: args.seniority,
-        questionCount: Math.max(transcript.length, 6),
+        questionCount: Math.max(transcript.length, args.plannedCount ?? 6),
         ctx,
         profile,
+        roundType,
+        framework: args.framework,
       });
+
+      // Name each story answer's competency (from the question it answered),
+      // so the debrief's story bank uses the same names as the library.
+      const labelled = transcript.map((t) => {
+        const q = matchStoredQuestion(stored, undefined, t.question);
+        return { ...t, competency: isCompetencyKey(q?.competency) ? competencyLabel(q!.competency!, args.seniority) : undefined };
+      });
+      const tested = new Set(labelled.map((t) => t.competency).filter(Boolean));
+      const untested = competencySet({ framework: args.framework, seniority: args.seniority })
+        .map((c) => c.label)
+        .filter((label) => !tested.has(label));
 
       const { system, user } = finalEvaluationPrompt({
         field: args.field,
         seniority: args.seniority,
-        transcript,
+        transcript: labelled,
         coverage: stageCoverage(blueprint, transcript),
         ctx,
         research,
+        roundType,
+        framework: args.framework,
+        untestedCompetencies: untested,
       });
       const res = await horus.infer<{ overallScore?: number }>({
         task: "interview.final_evaluation",
@@ -527,6 +703,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
             status: "completed",
             avg_score: clampScore(res.data.overallScore),
             ai_insights: res.data,
+            ...(args.durationSeconds !== undefined ? { duration_seconds: args.durationSeconds } : {}),
           })
           .eq("id", args.sessionId);
       } catch {
@@ -564,6 +741,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
 
       return ok({
         evaluation: res.data,
+        roundType,
         recommendationId,
         _meta: { model: res.model, research: researchMeta(research) },
       });
@@ -628,6 +806,29 @@ interface StoredQuestion {
   stage?: string;
   type?: string;
   expectedTopics?: string[];
+  /** Set by alignToSlot; absent on sessions stored before round types. */
+  targetWords?: unknown;
+  /** Story slots: the competency key the question tests. */
+  competency?: string;
+}
+
+/** What the evaluator returns — the parts this tool reads. */
+interface EvaluationData {
+  score?: number;
+  scoreBreakdown?: unknown;
+  cap?: unknown;
+  starBreakdown?: unknown;
+  starQuotes?: unknown;
+  competency?: unknown;
+  storyTitle?: unknown;
+}
+
+/**
+ * Clients that predate round types send none. Their sessions were full loops,
+ * except that a stored phone-screen question can only come from a screen.
+ */
+function inferRoundType(stored: StoredQuestion[]): RoundType {
+  return stored.some((q) => q.stage === "screen") ? "screen" : "full";
 }
 
 /** The questions we generated for this session, as stored on the session row. */
@@ -671,7 +872,11 @@ async function appendSessionQuestion(db: AuthContext["db"], sessionId: string, q
   }
 }
 
-/** The session so far, oldest first. */
+/**
+ * The session so far, oldest first. A question answered more than once (a
+ * retry) counts once, as its latest attempt: the debrief judges where they
+ * ended up, and the adaptive path must not count a retry as a new question.
+ */
 async function readTranscript(
   db: AuthContext["db"],
   sessionId: string,
@@ -682,13 +887,34 @@ async function readTranscript(
       .select("question_text, question_type, answer_text, overall_score")
       .eq("session_id", sessionId)
       .order("answered_at", { ascending: true });
-    return (data ?? []).map((r: any) => ({
+    const rows = (data ?? []).map((r: any) => ({
       question: String(r.question_text ?? "").trim(),
       type: r.question_type ?? undefined,
       answer: String(r.answer_text ?? ""),
       score: num(r.overall_score) ?? undefined,
     }));
+    return latestPerQuestion(rows);
   } catch {
     return [];
   }
+}
+
+const questionKey = (q: string) => q.replace(/\s+/g, " ").trim().toLowerCase();
+
+/** Same question, ignoring case and spacing — how a retry is recognised. */
+export function sameQuestion(a: string, b: string): boolean {
+  return questionKey(a) === questionKey(b);
+}
+
+/** Keep each question's latest answer, in the order the questions were first asked. */
+export function latestPerQuestion<T extends { question: string }>(rows: T[]): T[] {
+  const key = questionKey;
+  const order: string[] = [];
+  const latest = new Map<string, T>();
+  for (const row of rows) {
+    const k = key(row.question);
+    if (!latest.has(k)) order.push(k);
+    latest.set(k, row);
+  }
+  return order.map((k) => latest.get(k)!);
 }

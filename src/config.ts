@@ -80,6 +80,9 @@ export const config = {
     rateWindowMs: Number(opt("RATE_LIMIT_WINDOW_MS", "60000")),
     rateMax: Number(opt("RATE_LIMIT_MAX", "60")),
     llmTimeoutMs: Number(opt("LLM_TIMEOUT_MS", "60000")),
+    // Each spoken answer is paid audio, so voice sessions get their own, much
+    // tighter cap per signed-in learner.
+    voicePerHour: Number(opt("VOICE_RATE_PER_HOUR", "30")),
   },
 } as const;
 

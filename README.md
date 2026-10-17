@@ -96,6 +96,63 @@ real skills it probes; the model only writes the content. That is what makes the
   on STAR completeness and ownership (with a `starBreakdown`), technical ones on correctness and trade-offs.
 - **The debrief scores stages separately** and emits `nextSessionFocus`, which the learning pathway reads back.
 
+### Round types
+
+`start_interview_session`, `next_question`, `submit_answer`, `finish_interview` and
+`generate_contextual_questions` take an optional `roundType`. Each type has its own skeleton:
+
+| `roundType` | Skeleton (6 questions) | Judged on | Debrief adds |
+|---|---|---|---|
+| `full` (default) | warmup → domain/behavioral mix → situational → closing | the mixed rubric above | — |
+| `behavioral` | warmup → 4 stories, **one competency each** (picked by seniority) → closing | STAR, ownership, a measured result | `storyBank`, `missingStories` |
+| `technical` | easy opener → domain formats, ramping → one judgment call last | correctness, method, trade-offs | `depthMap` |
+| `screen` | pitch → motivation → experience → salary → logistics → their questions | a recruiter's lens, Australian norms (super, notice, working rights) | `screenVerdict`, `recruiterNote` |
+
+- **The slot is the contract.** Generated questions are aligned to their slot after the model returns
+  (`alignToBlueprint`): stage, type, difficulty and time budget are ours, the words are the model's.
+- **Length is counted, not guessed.** Slots where length matters (stories, every part of a screen) carry a
+  `targetWords` band at ~150 spoken words a minute. `submit_answer` returns a deterministic `lengthCheck`
+  and tells the evaluator the counted figures.
+- **Realistic mode stays on plan.** Pass `plannedCount` with `questionCount: 1` and the opener is slot 1 of
+  the round actually planned (the pitch of a screen), and `next_question` continues from the number of
+  questions *asked*, so a skipped question isn't asked again.
+- The type is saved on `interview_sessions.round_type` (CareerCraft migration
+  `20261017000000_interview_round_type.sql`) in a write of its own, so a database without the column loses
+  only the tag, never the session.
+
+### Practice loop
+
+- **The score shows its working** (`domain/scoring.ts`). The evaluator scores four dimensions and says
+  whether a hard rule caps the answer; the server computes the overall score from the rubric's weights and
+  the cap, and `submit_answer` returns that build (`scoring`) so a UI can draw it. For story questions it
+  also returns `highlights` — each STARR part (Situation, Task, Action, Result, Reflection) located in the
+  answer by character offsets, from quotes the evaluator gave and the server found — and `ownership`, the
+  counted "I" vs "we". A quote that isn't in the answer is dropped, never highlighted somewhere wrong.
+- **Retries.** Pass `attempt`, `previousAnswer` and `previousScore`; feedback says what changed and the
+  response carries `improvement: { from, to }`. A retried question counts once (its latest attempt) in the
+  transcript the debrief and the adaptive path read.
+- **Practise a question again.** `start_interview_session` takes `fixedQuestions` and asks them exactly as
+  given, with the same time and length rules their kind of slot has.
+- **Story library** (`interview_stories`). Every story slot names a competency (`domain/competencies.ts`);
+  a story answer is saved as the learner's best for that competency when it beats the last one, and the
+  response says so (`story`). Behavioural rounds put the competencies with no or weak story first;
+  `competency` on start practises one story.
+- **Public-sector mode.** `framework: "aps" | "nsw"` (plus `frameworkLevel` for NSW) makes story slots target
+  the framework's capabilities, named exactly as role descriptions name them (APS ILS — with the APS 1–6 and
+  EL/SES names; NSW Capability Framework v2).
+- **Selection criteria.** `draft_selection_criterion` writes a first-person STAR response to one criterion from
+  the learner's own stories and résumé, within a word limit it counts itself. It never invents facts.
+- **Spoken answers.** `POST /api/voice/session` asks Horus (`/voice/session`) for a short-lived, listen-only
+  realtime key for the signed-in learner (rate-limited per learner, `VOICE_RATE_PER_HOUR`). The browser
+  streams the microphone to the speech service directly and gets the transcript back; no audio touches this
+  server. 503 unless `HORUS_MODE=http` with a key.
+- **Is the score meaningful?** `npm run score-check` (real model only) scores strong and weak answers three
+  times each and fails if the strong one doesn't win by 2+ points or a score drifts 1.5+ between runs. Run it
+  before changing a rubric or the evaluator prompt.
+
+All of it is stored by CareerCraft migration `20261017010000_interview_practice_loop.sql`, written in
+best-effort updates of their own, so a database without it loses the extra detail, never an answer.
+
 ---
 
 ## Learning pathway (one call for the whole learning side)
@@ -157,7 +214,7 @@ Not everything comes from the web or the DB. Here's the split:
 | `domain/field-profile.ts` | **No occupation is named in code.** Only the field-independent rules: the question formats the rubric can score (technical, practical, case study, coding, system design) and how seniority shifts weight from craft depth to leadership. What each field actually needs comes from its *field profile* (see below). |
 | `domain/certifications.ts` | **~25 certs** (AWS, Azure, K8s, PMP, …) used as a **lookup table only** — it fills in cost, prep hours and level when a suggested credential matches, but never suggests anything itself, so its tech bias can't reach other fields. |
 | `domain/roadmap.ts` | Phase structure for roadmaps (Assess → Sharpen → Prove, etc.) |
-| `domain/interview-loop.ts` | Mock-interview stage structure (warmup → domain → behavioral → situational → closing) and the behavioural floor |
+| `domain/interview-loop.ts` | Mock-interview stage structure per round type (full, behavioural, technical, phone screen), the behavioural floor, behavioural competencies, and answer-length bands |
 | `domain/targets.ts` | Cold-start fallback chain for skill targets (debrief → matrix → field profile → research → universal fundamentals) |
 | `domain/prompts.ts` | Prompt templates, the cliché ban list, and the per-question-type evaluation rubrics |
 
@@ -375,6 +432,8 @@ src/
 | `POST /api/interview/next` | `next_question` |
 | `POST /api/interview/hint` | `get_interview_hint` |
 | `POST /api/interview/finish` | `finish_interview` |
+| `POST /api/interview/selection-criterion` | `draft_selection_criterion` |
+| `POST /api/voice/session` | — (mints a short-lived speech key through Horus; see "Practice loop") |
 | `POST /api/career/guidance` | `career_guidance` |
 | `POST /api/career/roadmap` | `build_career_roadmap` |
 | `POST /api/career/goal` | `set_career_goal` |

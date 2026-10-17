@@ -148,6 +148,103 @@ async function main() {
     if (!finish || typeof finish !== "object") fail("finish returned nothing");
     console.log("✓ finish session");
 
+    // A phone screen is its own round: recruiter questions in recruiter order,
+    // answers checked for length, and a put-forward call at the end.
+    const screen = await mustPost("/api/interview/start", {
+      field: "Payroll Officer",
+      questionCount: 1,
+      plannedCount: 4,
+      roundType: "screen",
+    });
+    const screenPlan: any[] = Array.isArray(screen.blueprint) ? screen.blueprint : [];
+    const screenParts = screenPlan.map((s) => s?.type).join(",");
+    if (screenParts !== "pitch,motivation,experience,salary") fail(`screen planned ${screenParts}`);
+    const opener = Array.isArray(screen.questions) ? screen.questions : [];
+    if (opener.length !== 1 || opener[0]?.type !== "pitch" || opener[0]?.targetWords?.max !== 225) {
+      fail(`a realistic screen must open on the pitch, with its length band: ${JSON.stringify(opener).slice(0, 300)}`);
+    }
+    const screenAnswer = await mustPost("/api/interview/answer", {
+      sessionId: screen.sessionId ?? randomUUID(),
+      questionText: opener[0].question,
+      questionType: "pitch",
+      answerText: "Payroll officer, four years, looking for a bigger team.",
+      field: "Payroll Officer",
+      roundType: "screen",
+    });
+    if (!screenAnswer.evaluation) fail("screen answer returned no evaluation");
+    const screenFinish = await mustPost("/api/interview/finish", {
+      sessionId: screen.sessionId ?? randomUUID(),
+      field: "Payroll Officer",
+      roundType: "screen",
+      plannedCount: 4,
+      durationSeconds: 300,
+    });
+    if (screenFinish.roundType !== "screen" || !screenFinish.evaluation?.screenVerdict) {
+      fail(`screen debrief needs a put-forward call: ${JSON.stringify(screenFinish).slice(0, 300)}`);
+    }
+    console.log(`✓ phone screen (${screenParts}; verdict "${screenFinish.evaluation.screenVerdict}")`);
+
+    const stories = await mustPost("/api/interview/start", { field: "Payroll Officer", questionCount: 6, roundType: "behavioral" });
+    const storyStages = new Set((stories.questions ?? []).map((q: any) => q?.stage));
+    if (storyStages.has("domain") || storyStages.has("situational")) {
+      fail(`a behavioural round asked craft questions: ${[...storyStages].join(",")}`);
+    }
+    console.log(`✓ behavioural round has no craft questions (${[...storyStages].join(", ")})`);
+
+    // The score shows its working: dimensions × weights, and STAR highlights
+    // located in the answer itself. A retry reports the change.
+    const storyQ = (stories.questions ?? [])[1];
+    const storyAnswer =
+      "Last year our weekly reporting pack took two full days to build by hand. I mapped every step, rebuilt the data pull in Python and automated the template, and the pack now takes half a day.";
+    const scored = await mustPost("/api/interview/answer", {
+      sessionId: randomUUID(),
+      questionText: storyQ?.question ?? "Tell me about a time you owned something.",
+      questionType: "behavioral",
+      answerText: storyAnswer,
+      field: "Payroll Officer",
+      roundType: "behavioral",
+      attempt: 2,
+      previousAnswer: "We fixed the report.",
+      previousScore: 4,
+    });
+    const build = scored.scoring;
+    if (!build || !Array.isArray(build.dimensions) || build.dimensions.length !== 4 || typeof build.final !== "number") {
+      fail(`answer must return its score build: ${JSON.stringify(scored).slice(0, 300)}`);
+    }
+    if (scored.evaluation?.score !== build.final) fail("the evaluation's score must be the built score");
+    const hl = scored.highlights ?? [];
+    if (!hl.length || hl.some((h: any) => storyAnswer.slice(h.start, h.end).length < 8)) {
+      fail(`STAR highlights must point into the answer: ${JSON.stringify(hl)}`);
+    }
+    if (scored.ownership?.i !== 1 || scored.ownership?.we !== 1) fail(`ownership miscounted: ${JSON.stringify(scored.ownership)}`);
+    if (scored.improvement?.from !== 4 || scored.improvement?.to !== build.final) fail("a retry must report its change");
+    console.log(`✓ score shows its working (${build.final}/10 from 4 dimensions, ${hl.length} STAR highlights, retry 4 → ${build.final})`);
+
+    const fixed = await mustPost("/api/interview/start", {
+      field: "Payroll Officer",
+      roundType: "screen",
+      fixedQuestions: [{ question: "What are you after salary-wise — base or package plus super?", type: "salary" }],
+    });
+    const fq = fixed.questions?.[0];
+    if (fixed.questions?.length !== 1 || fq?.stage !== "screen" || fq?.targetWords?.max !== 110) {
+      fail(`a fixed question must be asked as given, with its rules: ${JSON.stringify(fixed).slice(0, 300)}`);
+    }
+    console.log("✓ practise a question again (asked as given, salary rules kept)");
+
+    const ksc = await mustPost("/api/interview/selection-criterion", {
+      criterion: "Demonstrated ability to deliver results in a fast-paced environment.",
+      wordLimit: 250,
+    });
+    if (typeof ksc.draft !== "string" || typeof ksc.wordCount !== "number" || ksc.wordLimit !== 250 || typeof ksc.overLimit !== "boolean") {
+      fail(`selection criterion draft incomplete: ${JSON.stringify(ksc).slice(0, 300)}`);
+    }
+    console.log(`✓ selection criterion drafted (${ksc.wordCount}/${ksc.wordLimit} words, counted)`);
+
+    // Voice needs Horus: in mock mode it must say so, not crash.
+    const voice = await post("/api/voice/session", {});
+    if (voice.status !== 503) fail(`voice without Horus should be 503, got ${voice.status}`);
+    console.log("✓ voice reports unavailable without Horus (503)");
+
     const tips = await mustPost("/api/proven-tips", { skill: "System Design", count: 2 });
     if (!tips) fail("proven-tips returned nothing");
     console.log("✓ proven tips");

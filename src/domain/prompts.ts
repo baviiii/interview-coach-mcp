@@ -6,7 +6,16 @@
 
 import { researchIsEmpty, type FieldResearch, type ResearchKind, type ResearchSnippet } from "../adapters/research/port.js";
 import { DOMAIN_FORMATS, FORMAT_GUIDE, STORED_LEVELS } from "./field-profile.js";
-import { blueprintText, type InterviewBlueprint, type InterviewStage } from "./interview-loop.js";
+import { FRAMEWORK_NAMES, type FrameworkId } from "./competencies.js";
+import {
+  blueprintText,
+  SPOKEN_WORDS_PER_MINUTE,
+  type InterviewBlueprint,
+  type InterviewStage,
+  type LengthCheck,
+  type RoundType,
+} from "./interview-loop.js";
+import { rubricFor, weightsText } from "./scoring.js";
 import type { LearnerContext } from "../types.js";
 
 function contextBlock(ctx?: LearnerContext): string {
@@ -85,6 +94,56 @@ const BANNED_QUESTIONS = `Never use these — they are the reason generic mocks 
 - "What is your greatest weakness/strength", "Where do you see yourself in 5 years"
 - "Why do you want to work here" with no company or JD to ground it
 - Textbook trivia with one memorised answer, or a stock puzzle (FizzBuzz, "design a URL shortener", "reverse a linked list") unless the job description explicitly calls for it`;
+
+/**
+ * A phone screen is the one round where the opener and "why us" ARE the test,
+ * so the general ban list would forbid the very questions recruiters ask.
+ */
+const BANNED_SCREEN_QUESTIONS = `Never use these — they make a practice call feel like a template:
+- "What is your greatest weakness/strength", "Where do you see yourself in 5 years"
+- Technical trivia, puzzles or deep craft questions — a recruiter doesn't run those on a first call
+The recruiter's opener ("Talk me through your background…") IS the pitch slot here: phrase it the way a real recruiter would, tied to this job.`;
+
+function bannedQuestions(roundType: RoundType): string {
+  return roundType === "screen" ? BANNED_SCREEN_QUESTIONS : BANNED_QUESTIONS;
+}
+
+/** What each kind of round is, said once, at the top of every prompt that builds one. */
+function roundBrief(roundType: RoundType, field: string): string {
+  switch (roundType) {
+    case "behavioral":
+      return `THIS IS A BEHAVIOURAL ROUND. Every question asks for one specific past situation ("Tell me about a time…", "Give me an example of…", "Describe a situation where…") — never a hypothetical ("What would you do if…") and never a knowledge question. Each slot names the competency it tests; no two questions may be answerable with the same story. Australian panels, the public sector especially, map these questions to selection criteria or capabilities and expect STAR answers.`;
+    case "technical":
+      return `THIS IS A TECHNICAL / SKILLS ROUND. Every question tests the work of ${field} itself: method, reasoning, judgment and trade-offs. No "tell me about a time" questions. Outside software, "technical" means the hands-on professional skill of the job (clinical, trade, financial, legal, teaching practice, …) — never software by default.`;
+    case "screen":
+      return `THIS IS A RECRUITER PHONE SCREEN: the first round, 15-20 minutes, usually an agency or in-house recruiter rather than the hiring manager. They're checking motivation, communication, fit, salary and logistics — not deep craft. Australian norms: salary is talked about as base or package "plus super", notice periods are usually two to four weeks, and working rights are asked directly.`;
+    default:
+      return "";
+  }
+}
+
+/**
+ * Public-sector mode: the panel marks against a capability framework, so
+ * story questions are worded the way that panel would word them and every
+ * story is filed under the framework's own capability names.
+ */
+export function frameworkBrief(framework?: FrameworkId, level?: string): string {
+  if (!framework) return "";
+  const name = FRAMEWORK_NAMES[framework];
+  const pitched = level ? ` Pitch every story question at the ${level} level of that framework.` : "";
+  return `THIS IS A PUBLIC-SECTOR ROLE. The panel marks against the ${name}. Each story slot names the capability it tests: word the question the way an Australian public-sector panel would for that capability, and put the capability's exact name in the question's "category".${pitched}`;
+}
+
+/**
+ * Focus areas (a plan round, or the debrief's weak spots) steer the questions
+ * inside their slots. They used to say "stay inside it", which fought the
+ * blueprint whenever the focus and the slot disagreed; the slot now wins.
+ */
+function focusLine(focusAreas?: string[]): string {
+  return focusAreas?.length
+    ? `THIS SESSION'S FOCUS: ${focusAreas.join(", ")} — lean each question toward these wherever its slot allows.\n`
+    : "";
+}
 
 /** The full career picture — used by career.* and profile.* prompts. */
 function careerContextBlock(ctx: LearnerContext): string {
@@ -205,18 +264,33 @@ export function generateQuestionsPrompt(args: {
   research?: FieldResearch;
 }): PromptPair {
   const bp = args.blueprint;
+  const screen = bp.roundType === "screen";
   const types = [...new Set(bp.slots.map((s) => s.type))];
+  const stages = [...new Set(bp.slots.map((s) => s.stage))];
   const formatLines = types.map((t) => `- ${t}: ${FORMAT_GUIDE[t] ?? t}`).join("\n");
+  const brief = [roundBrief(bp.roundType, bp.field), frameworkBrief(bp.framework, bp.frameworkLevel)].filter(Boolean).join("\n\n");
 
-  const system = `You are a seasoned hiring manager and interview panelist for ${bp.field} roles, with 15+ years designing real interview loops in this exact field. You are running a live mock interview for one specific candidate.
+  const persona = screen
+    ? `You are an experienced Australian recruiter (agency or in-house talent acquisition) who screens candidates for ${bp.field} roles every week. You are running a practice phone screen for one specific candidate.`
+    : `You are a seasoned hiring manager and interview panelist for ${bp.field} roles, with 15+ years designing real interview loops in this exact field. You are running a live mock interview for one specific candidate.`;
 
-HOW YOU WRITE QUESTIONS:
+  const rules = screen
+    ? `HOW YOU WRITE QUESTIONS:
+- Short and conversational: one or two sentences, the way a recruiter actually talks on the phone.
+- Tie each question to this job (and the ad, when there is one) — never to a generic role.
+- One thing per question, except the logistics slot, where a recruiter naturally bundles notice period, start date and working rights.
+- Vary phrasing; this candidate practises repeatedly and must not recognise the set.`
+    : `HOW YOU WRITE QUESTIONS:
 - Open-ended, and answerable only by someone who has actually done this work. If the question could be pasted into any interview for any candidate, it is a failed question — rewrite it.
 - Anchor each question in something real: this candidate's own history, the target job, or how ${bp.field} genuinely interviews. Behavioural questions must demand a specific past situation, their actions and a measurable result.
 - Use the language, scenarios and stakes of real ${bp.field} work — not generic tech-interview tropes unless this IS a tech field.
-- Vary phrasing and scenarios; this candidate practises repeatedly and must not recognise the set.
+- Vary phrasing and scenarios; this candidate practises repeatedly and must not recognise the set.`;
 
-${BANNED_QUESTIONS}
+  const system = `${persona}
+${brief ? `\n${brief}\n` : ""}
+${rules}
+
+${bannedQuestions(bp.roundType)}
 
 ROLE CALIBRATION — ${bp.field} (${bp.seniority}):
 - Craft depth weight: ${Math.round(bp.depth * 100)}%
@@ -232,26 +306,24 @@ Return ONLY JSON:
   "analysis": { "roleUnderstanding": string, "keyCompetencies": string[] },
   "questions": [{
     "id": number, "question": string,
-    "stage": "warmup|behavioral|domain|situational|closing",
+    "stage": "${stages.join("|")}",
     "type": "${types.join("|")}",
     "difficulty": "easy|medium|hard|expert", "category": string,
-    "skillsTested": string[], "expectedTopics": string[], "timeAllocationMinutes": number,
+    "skillsTested": string[], "expectedTopics": string[], "timeAllocationMinutes": "the slot's minutes",
     "whyThisQuestion": "one sentence, addressed to the candidate, on why THEY are being asked this — cite the specific thing about them that prompted it",
     "followUps": ["two probes you would push with if the answer stays shallow"],
     "signalsSought": ["what a strong answer proves"]
   }]
 }`;
 
-  const user = `Run the loop below. Produce EXACTLY ${bp.slots.length} questions, one per slot, in this order, keeping each slot's id, stage, type and difficulty exactly as specified.
+  const user = `Run the loop below. Produce EXACTLY ${bp.slots.length} questions, one per slot, in this order, keeping each slot's id, stage, type, difficulty and minutes exactly as specified.
 
 INTERVIEW LOOP (fill each slot):
 ${blueprintText(bp)}
 
 ROLE: ${bp.field}
 SENIORITY: ${bp.seniority}
-${args.jobDescription ? `JOB DESCRIPTION:\n${args.jobDescription}\n` : ""}${
-    args.focusAreas?.length ? `THIS ROUND'S FOCUS: ${args.focusAreas.join(", ")} — stay inside it.\n` : ""
-  }${interviewLearnerBlock(args.ctx)}
+${args.jobDescription ? `JOB DESCRIPTION:\n${args.jobDescription}\n` : ""}${focusLine(args.focusAreas)}${interviewLearnerBlock(args.ctx)}
 ${avoidBlock(args.ctx)}${realWorldBlock(args.research)}
 Where a slot names a skill to probe, the question must genuinely test it — bias toward their weakest skills without telegraphing that you are doing so${
     hasResearch(args.research) ? ", and mirror the real-world signals above (how this field actually interviews)" : ""
@@ -272,13 +344,24 @@ export function nextQuestionPrompt(args: {
   covered: string[];
   ctx?: LearnerContext;
   research?: FieldResearch;
+  roundType?: RoundType;
+  framework?: FrameworkId;
+  frameworkLevel?: string;
 }): PromptPair {
-  const system = `You are the interviewer mid-loop, choosing what to ask next. You have just heard their previous answer, and the question you ask now should feel like it came from a person who was listening — either pressing on what they left thin, or moving deliberately to the next thing you need to see.
-
-${BANNED_QUESTIONS}
+  const roundType = args.roundType ?? "full";
+  const brief = [roundBrief(roundType, args.field), frameworkBrief(args.framework, args.frameworkLevel)]
+    .filter(Boolean)
+    .join("\n\n");
+  const who =
+    roundType === "screen"
+      ? "You are the recruiter mid-call, choosing what to ask next."
+      : "You are the interviewer mid-loop, choosing what to ask next.";
+  const system = `${who} You have just heard their previous answer, and the question you ask now should feel like it came from a person who was listening — either pressing on what they left thin, or moving deliberately to the next thing you need to see.
+${brief ? `\n${brief}\n` : ""}
+${bannedQuestions(roundType)}
 
 Return ONLY JSON for ONE question:
-{ "id": number, "question": string, "stage": "warmup|behavioral|domain|situational|closing",
+{ "id": number, "question": string, "stage": "warmup|behavioral|domain|situational|closing|screen",
   "type": string, "difficulty": string, "category": string,
   "skillsTested": string[], "expectedTopics": string[],
   "whyThisQuestion": "one sentence to the candidate on why this follows from what they just said or from where they're weakest",
@@ -288,9 +371,7 @@ The "difficulty" MUST be "${args.difficulty}".${
   }`;
 
   const user = `FIELD: ${args.field} | SENIORITY: ${args.seniority ?? "Mid-Level"}
-${args.slot ? `THIS SLOT SCREENS FOR: ${args.slot.intent}\n` : ""}${args.focusSkill ? `Probe this weak skill: ${args.focusSkill}.\n` : ""}${
-    args.focusAreas?.length ? `THIS ROUND'S FOCUS: ${args.focusAreas.join(", ")}. Stay within it.\n` : ""
-  }${
+${args.slot ? `THIS SLOT SCREENS FOR: ${args.slot.intent}\n` : ""}${args.focusSkill ? `Probe this weak skill: ${args.focusSkill}.\n` : ""}${focusLine(args.focusAreas)}${
     args.lastExchange
       ? `THEIR PREVIOUS EXCHANGE:\nQ: ${args.lastExchange.question}\nA: ${args.lastExchange.answer.slice(0, 1200)}${
           args.lastExchange.score != null ? `\n(scored ${args.lastExchange.score}/10)` : ""
@@ -303,78 +384,80 @@ ${avoidBlock(args.ctx, args.covered)}${realWorldBlock(args.research, { only: ["q
 }
 
 /**
- * Rubric weights by question type. A behavioural answer graded on "content 40%"
- * scores badly for the wrong reason, and a system-design answer graded on STAR
- * is nonsense — so the weights move with the question while the four reported
- * dimensions stay stable for the UI.
+ * Evaluating one answer. The weighting comes from domain/scoring.ts so the
+ * prompt and the server's own score maths can never disagree; the model
+ * scores the four dimensions and says if a hard rule caps the answer, and the
+ * server works out the overall score from those (buildScore).
  */
-function rubricFor(questionType?: string): { weights: string; emphasis: string; star: boolean } {
-  const t = (questionType ?? "").toLowerCase();
-  if (/behavior|warmup|closing|leadership/.test(t)) {
-    return {
-      weights: "content/substance of the story (25%), communication & structure (25%), behavioral evidence — STAR completeness, ownership, specificity (35%), strategic impact — the measurable result and what they learned (15%)",
-      emphasis:
-        'A story without a specific situation, their OWN actions ("we" everywhere is a red flag) and a concrete outcome cannot score above 5, however fluent it sounds.',
-      star: true,
-    };
-  }
-  if (/practical|hands_on/.test(t)) {
-    return {
-      weights: "content — a correct, safe, standards-compliant approach (45%), communication — can they walk someone through it step by step (20%), behavioral — when they would check, escalate or stop (15%), strategic — judgment about constraints, risk and priorities (20%)",
-      emphasis:
-        "Score what they would actually DO, in order. Skipping a safety, legal or quality check this field treats as non-negotiable caps the score at 5, however confident the answer sounds.",
-      star: false,
-    };
-  }
-  if (/technical|coding|system_design|design/.test(t)) {
-    return {
-      weights: "content — correctness and technical depth (45%), communication — how clearly they reason aloud (20%), behavioral — how they handle uncertainty and pushback (10%), strategic — trade-offs, constraints and impact (25%)",
-      emphasis:
-        "Reward naming real trade-offs and failure modes; penalise buzzword recall with no mechanism behind it. A confidently wrong claim is worse than an acknowledged unknown.",
-      star: false,
-    };
-  }
-  if (/situational|case/.test(t)) {
-    return {
-      weights: "content — quality of judgment and the options considered (35%), communication — structure of the reasoning (25%), behavioral — stakeholder awareness (20%), strategic — risk, second-order effects, what they'd do first (20%)",
-      emphasis: "There is no single right answer; score the reasoning, the trade-offs surfaced, and whether they committed to a decision.",
-      star: false,
-    };
-  }
-  return {
-    weights: "content (40%), communication (30%), behavioral (20%), strategic impact (10%)",
-    emphasis: "Be constructive and specific.",
-    star: false,
-  };
-}
-
 export function evaluateAnswerPrompt(args: {
   field: string;
   seniority?: string;
   question: string;
   questionType?: string;
+  /** The question's stage: a full interview's opener and closer are judged on fit, not STAR. */
+  stage?: string;
   answer: string;
   expectedTopics?: string[];
   /** Earlier exchanges this session — lets the evaluator spot patterns and
    *  avoid repeating coaching the candidate already received. */
   transcript?: Array<{ question: string; answer: string; score?: number }>;
   ctx?: LearnerContext;
+  roundType?: RoundType;
+  /** Counted by the server — the evaluator is told the figures, never asked to estimate them. */
+  length?: LengthCheck | null;
+  /** Counted by the server for story questions: first-person singular vs plural. */
+  ownership?: { i: number; we: number } | null;
+  /** A retry of the same question: what they said last time and how it scored. */
+  previous?: { answer: string; score: number | null; attempt: number } | null;
+  /** Story questions: the competency the slot targets, if it named one. */
+  competency?: { key: string; label: string } | null;
+  /** Story questions without a slot competency: the set to classify into. */
+  competencyChoices?: Array<{ key: string; label: string }>;
+  framework?: FrameworkId;
 }): PromptPair {
-  const rubric = rubricFor(args.questionType);
+  const rubric = rubricFor(args.questionType, { stage: args.stage, roundType: args.roundType });
+  const who =
+    args.roundType === "screen"
+      ? `You are an experienced Australian recruiter judging one answer from a phone screen for a ${args.field} role.`
+      : `You are an elite interview evaluator for ${args.field} roles.`;
 
-  const system = `You are an elite interview evaluator for ${args.field} roles. Score this answer against the weighting for THIS question type: ${rubric.weights}.
-Scale: 9-10 exceptional, 7-8 strong, 5-6 adequate, 3-4 weak, 1-2 poor. ${rubric.emphasis}
-Quote their actual words when you praise or criticise — generic feedback is worthless to them. The rewritten answer must use THEIR material (their real experience as given), not an invented one.
+  const storyFields = rubric.star
+    ? `
+  "starBreakdown": { "situation": "present|thin|missing", "task": "present|thin|missing", "action": "present|thin|missing", "result": "present|thin|missing", "reflection": "present|thin|missing", "note": string },
+  "starQuotes": [{ "part": "situation|task|action|result|reflection", "quote": "an EXACT, contiguous quote from their answer, 5-40 words, copied character for character" }],${
+    args.competency
+      ? ""
+      : `
+  "competency": "the key of the ONE competency this story best shows, from the list below, or null if it shows none",`
+  }
+  "storyTitle": "4-8 words naming the story they told, in their terms (e.g. 'Automated the weekly reporting pack')",`
+    : "";
+
+  const system = `${who} Score this answer against the weighting for THIS question type: ${weightsText(rubric)}.
+Scale for every dimension: 9-10 exceptional, 7-8 strong, 5-6 adequate, 3-4 weak, 1-2 poor. ${rubric.emphasis}
+When one of the rules above limits the score, set "cap" to that limit and the rule it broke; otherwise "cap" is null. The overall score is worked out from your dimension scores and the weights above, so score each dimension honestly on its own.
+Quote their actual words when you praise or criticise — generic feedback is worthless to them. The rewritten answer must use THEIR material (their real experience as given), not an invented one${
+    args.length ? ", and must itself fit the healthy length given below" : ""
+  }.${
+    args.length && args.length.verdict !== "ok"
+      ? `\nThe answer's length is outside the healthy range: make one coaching tip about that, using the counted figures exactly as given.`
+      : ""
+  }${
+    rubric.star
+      ? `\nThis is a story question, judged as STARR — Situation, Task, Action, Result, and Reflection (what they learned or would do differently), which many Australian panels and university careers services ask for. For each part present in the answer, give one exact quote in "starQuotes"; leave out parts that aren't there rather than quoting something else.`
+      : ""
+  }${
+    args.previous
+      ? `\nThis is attempt ${args.previous.attempt} at this question. Score this answer on its own merits, then say plainly in the first coaching tip what changed from their last attempt and what still holds it back.`
+      : ""
+  }
 
 Return ONLY JSON:
 {
   "score": number,
   "scoreBreakdown": { "content": {"score": number, "note": string}, "communication": {"score": number, "note": string}, "behavioral": {"score": number, "note": string}, "strategic": {"score": number, "note": string} },
-  "rubricApplied": "one line naming the weighting you used and why it fits this question type",${
-    rubric.star
-      ? '\n  "starBreakdown": { "situation": "present|thin|missing", "task": "present|thin|missing", "action": "present|thin|missing", "result": "present|thin|missing", "note": string },'
-      : ""
-  }
+  "cap": { "max": number, "reason": "the rule that limits the score, in plain words" } | null,
+  "rubricApplied": "one line naming the weighting you used and why it fits this question type",${storyFields}
   "skillsAssessed": [{ "skill": string, "proficiencyDemonstrated": number, "evidence": string }],
   "validation": { "strengths": string[], "missing": string[], "redFlags": string[] },
   "improvedAnswer": { "rewritten": string, "keyChanges": string[] },
@@ -388,29 +471,124 @@ Return ONLY JSON:
     .map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer.slice(0, 600)}${t.score != null ? ` (scored ${t.score})` : ""}`)
     .join("\n\n");
 
+  const competencyLines = rubric.star
+    ? args.competency
+      ? `THIS QUESTION TESTS: ${args.competency.label}${args.framework ? ` (${FRAMEWORK_NAMES[args.framework]})` : ""}\n`
+      : args.competencyChoices?.length
+        ? `COMPETENCIES TO CHOOSE FROM (key — name):\n${args.competencyChoices.map((c) => `  - ${c.key} — ${c.label}`).join("\n")}\n`
+        : ""
+    : "";
+
   const user = `Evaluate this answer.
 FIELD: ${args.field} | SENIORITY: ${args.seniority ?? "Mid-Level"}
-QUESTION (${args.questionType ?? "general"}): ${args.question}
-${args.expectedTopics?.length ? `EXPECTED TOPICS: ${args.expectedTopics.join(", ")}\n` : ""}ANSWER:
+QUESTION (${rubric.kind === "fit" ? `${args.stage} — motivation and fit` : args.questionType ?? "general"}): ${args.question}
+${competencyLines}${args.expectedTopics?.length ? `EXPECTED TOPICS: ${args.expectedTopics.join(", ")}\n` : ""}ANSWER:
 """${args.answer}"""
-${earlier ? `\nEARLIER IN THIS SESSION (for pattern-spotting — do not re-coach what they already fixed):\n${earlier}\n` : ""}${contextBlock(args.ctx)}`;
+${lengthLine(args.length)}${
+    args.ownership
+      ? `FIRST PERSON (counted by the system): "I/me/my" ${args.ownership.i} times, "we/us/our" ${args.ownership.we} times.\n`
+      : ""
+  }${
+    args.previous
+      ? `\nTHEIR PREVIOUS ATTEMPT${args.previous.score !== null ? ` (scored ${args.previous.score}/10)` : ""}:\n"""${args.previous.answer.slice(0, 3000)}"""\n`
+      : ""
+  }${earlier ? `\nEARLIER IN THIS SESSION (for pattern-spotting — do not re-coach what they already fixed):\n${earlier}\n` : ""}${contextBlock(args.ctx)}`;
 
   return { system, user };
+}
+
+/** m:ss, for spoken durations in prompts. */
+function clock(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function lengthLine(length?: LengthCheck | null): string {
+  if (!length) return "";
+  const spoken = (words: number) => clock((words / SPOKEN_WORDS_PER_MINUTE) * 60);
+  const verdict = { short: "too short", ok: "about right", long: "too long" }[length.verdict];
+  return `ANSWER LENGTH (counted by the system — use these figures, never re-estimate them): ${length.words} words, about ${clock(
+    length.spokenSeconds,
+  )} said out loud. A healthy answer here is ${length.target.min}-${length.target.max} words (${spoken(length.target.min)}-${spoken(
+    length.target.max,
+  )} spoken). Verdict: ${verdict}.\n`;
+}
+
+/**
+ * What each kind of debrief is for. The JSON core stays the same for the UI;
+ * each round adds the one thing its reader most needs from it.
+ */
+function debriefFraming(roundType: RoundType, field: string): { persona: string; judge: string; extraJson: string; closing: string } {
+  switch (roundType) {
+    case "behavioral":
+      return {
+        persona: `You are a senior panel chair writing the debrief for a behavioural round for ${field}.`,
+        judge:
+          "Judge the stories: a specific situation, their OWN actions, a measurable result, and what they learned. Say which competencies now have a strong story and which have none yet — that story bank is what they'll take into the real panel.",
+        extraJson: `,
+  "storyBank": [{ "competency": string, "story": "4-8 words naming the story they told", "verdict": "strong|usable|weak" }],
+  "missingStories": ["competencies a panel at this level will ask about that they have no story for yet"]`,
+        closing: 'Give one "storyBank" entry per behavioural answer they actually gave.',
+      };
+    case "technical":
+      return {
+        persona: `You are a senior ${field} practitioner writing the debrief for a technical round.`,
+        judge:
+          "Separate what they demonstrably know from what they guessed or recited. Name the specific methods or concepts that held up and the ones that broke, with the evidence from their answers.",
+        extraJson: `,
+  "depthMap": [{ "topic": string, "verdict": "solid|shaky|gap", "evidence": "what they said that shows it" }]`,
+        closing: 'Give one "depthMap" entry per topic the round actually tested.',
+      };
+    case "screen":
+      return {
+        persona: `You are the recruiter who just ran this phone screen for a ${field} role, deciding whether to put the candidate forward to the hiring manager.`,
+        judge:
+          "Judge each part of the call — pitch, motivation, experience, salary, logistics, their questions — for clarity, concision, fit and whether anything would worry a hiring manager. Use the part names as the stageBreakdown stages.",
+        extraJson: `,
+  "screenVerdict": "Put forward|Put forward with a note|Hold|Not this time",
+  "recruiterNote": "the two or three sentences you'd send the hiring manager about them, in a recruiter's voice"`,
+        closing: '"screenVerdict" is what a real recruiter would decide on this call alone.',
+      };
+    default:
+      return {
+        persona: `You are a senior talent-acquisition leader writing an interview debrief for ${field}.`,
+        judge:
+          "Judge behavioural and domain performance SEPARATELY before you combine them — a candidate who is strong on stories and weak on craft needs to be told exactly that.",
+        extraJson: "",
+        closing: "",
+      };
+  }
 }
 
 export function finalEvaluationPrompt(args: {
   field: string;
   seniority?: string;
-  transcript: Array<{ question: string; type?: string; answer: string; score?: number }>;
+  /** `competency` is the label of the competency a story question tested, when the slot named one. */
+  transcript: Array<{ question: string; type?: string; answer: string; score?: number; competency?: string }>;
   /** Planned vs answered per stage — lets the debrief separate behavioural from
    *  technical performance instead of averaging them into mush. */
   coverage?: Array<{ stage: string; planned: number; answered: number }>;
   ctx?: LearnerContext;
   research?: FieldResearch;
+  roundType?: RoundType;
+  framework?: FrameworkId;
+  /** Competencies the round's set covers that no answer tested — "missingStories" picks from these. */
+  untestedCompetencies?: string[];
 }): PromptPair {
-  const system = `You are a senior talent-acquisition leader writing an interview debrief for ${args.field}. Honest, constructive, actionable — the candidate will read this and act on it.
+  const framing = debriefFraming(args.roundType ?? "full", args.field);
+  const storyNaming =
+    args.roundType === "behavioral"
+      ? `\nName each "storyBank" competency exactly as it appears in brackets in the transcript${
+          args.framework ? ` (these are ${FRAMEWORK_NAMES[args.framework]} capabilities)` : ""
+        }.${
+          args.untestedCompetencies?.length
+            ? ` Choose "missingStories" only from these, which this round didn't test: ${args.untestedCompetencies.join("; ")}.`
+            : ""
+        }`
+      : "";
+  const system = `${framing.persona} Honest, constructive, actionable — the candidate will read this and act on it.
 Grades: A+ (95-100) … D/F (<55). Readiness: "Ready" | "Almost Ready" | "Needs Development" | "Not Ready".
-Judge behavioural and domain performance SEPARATELY before you combine them — a candidate who is strong on stories and weak on craft needs to be told exactly that. Ground every claim in something they actually said.
+${framing.judge} Ground every claim in something they actually said.${storyNaming}
 
 Return ONLY JSON:
 {
@@ -422,11 +600,16 @@ Return ONLY JSON:
   "developmentAreas": { "critical": string[], "important": string[] },
   "competencyMatrix": [{ "competency": string, "score": number, "level": string, "developmentNeeded": boolean }],
   "improvementPlan": { "immediate": [{ "area": string, "action": string, "timeline": string }] },
-  "nextSessionFocus": { "skills": ["2-3 skills the next mock should hammer"], "questionTypes": ["the question types they most need reps on"], "why": string }
-}`;
+  "nextSessionFocus": { "skills": ["2-3 skills the next mock should hammer"], "questionTypes": ["the question types they most need reps on"], "why": string }${framing.extraJson}
+}${framing.closing ? `\n${framing.closing}` : ""}`;
 
   const qa = args.transcript
-    .map((t, i) => `Q${i + 1} [${t.type ?? "general"}]: ${t.question}\nA${i + 1}: ${t.answer}${t.score != null ? `\n(score ${t.score})` : ""}`)
+    .map(
+      (t, i) =>
+        `Q${i + 1} [${t.type ?? "general"}${t.competency ? ` · ${t.competency}` : ""}]: ${t.question}\nA${i + 1}: ${t.answer}${
+          t.score != null ? `\n(score ${t.score})` : ""
+        }`,
+    )
     .join("\n\n");
 
   const coverage = (args.coverage ?? [])
@@ -440,6 +623,56 @@ TRANSCRIPT:
 ${qa}${interviewLearnerBlock(args.ctx)}
 ${realWorldBlock(args.research, { only: ["experience", "question"] })}
 "nextSessionFocus" feeds their study plan directly — make it specific enough to act on tomorrow.`;
+
+  return { system, user };
+}
+
+/**
+ * A written response to a key selection criterion, built from the learner's
+ * own stories. Australian public-sector (and many private) applications ask
+ * for these, usually capped at a word limit per criterion. The model may only
+ * use facts the learner has already given us — a criterion response is signed
+ * by the applicant, so an invented number or employer is worse than a gap.
+ */
+export function selectionCriterionPrompt(args: {
+  criterion: string;
+  wordLimit: number;
+  stories: Array<{ competency: string; label: string; title: string; answer: string }>;
+  jobDescription?: string;
+  framework?: FrameworkId;
+  frameworkLevel?: string;
+  ctx?: LearnerContext;
+}): PromptPair {
+  const system = `You help Australian job applicants write responses to key selection criteria. Write as the applicant, in the first person and Australian English.
+Use one specific example, in STAR order: the Situation and Task briefly, most of the words on what THEY did (the Action), then the Result — with numbers only if their material has them — and, if it fits, one line of Reflection.
+Use ONLY facts from their stories and résumé below. Never invent an employer, a number, a timeframe or an outcome. If nothing they've given fits this criterion, return an empty "draft" and say in "gaps" exactly what story they need.
+Stay under ${args.wordLimit} words.${
+    args.framework
+      ? ` The criterion maps to the ${FRAMEWORK_NAMES[args.framework]}${args.frameworkLevel ? ` at the ${args.frameworkLevel} level` : ""}; use that capability's language where it reads naturally.`
+      : ""
+  }
+
+Return ONLY JSON:
+{
+  "draft": string,
+  "storyUsed": "the competency key of the story you built from, or null",
+  "starCoverage": { "situation": "present|thin|missing", "task": "present|thin|missing", "action": "present|thin|missing", "result": "present|thin|missing", "reflection": "present|thin|missing" },
+  "gaps": ["what's missing that would make this stronger — a number, a result, a clearer 'I'"],
+  "tips": ["one or two specific edits they could make"]
+}`;
+
+  const stories = args.stories.length
+    ? args.stories
+        .map((s) => `- [${s.competency} — ${s.label}] "${s.title}":\n  """${s.answer.slice(0, 2500)}"""`)
+        .join("\n")
+    : "- (no stories saved yet)";
+
+  const user = `CRITERION: ${args.criterion}
+WORD LIMIT: ${args.wordLimit}
+${args.jobDescription ? `JOB AD (excerpt):\n${args.jobDescription.slice(0, 2500)}\n` : ""}
+THEIR STORIES (their own words from practice — the only facts you may use besides the résumé):
+${stories}
+${args.ctx?.resumeSummary ? `\nRÉSUMÉ (excerpt): ${args.ctx.resumeSummary}` : ""}`;
 
   return { system, user };
 }

@@ -16,12 +16,22 @@ export const TABLES_USED: Record<string, readonly string[]> = {
     "confidence_score", "status", "created_at",
   ],
   interview_answers: [
-    "session_id", "user_id", "question_id", "question_text", "question_type", "answer_text",
+    "id", "session_id", "user_id", "question_id", "question_text", "question_type", "answer_text",
     "overall_score", "time_taken_seconds", "answered_at",
+    // CareerCraft migration 20261017010000_interview_practice_loop.sql.
+    "evaluation", "attempt",
   ],
   interview_sessions: [
     "id", "user_id", "field", "seniority", "status", "questions", "question_count",
-    "completed_at", "avg_score", "ai_insights", "created_at",
+    "completed_at", "avg_score", "ai_insights", "created_at", "duration_seconds",
+    // CareerCraft migrations 20261017000000_interview_round_type.sql and
+    // 20261017010000_interview_practice_loop.sql — both must be live before
+    // this server deploys (CI checks it).
+    "round_type", "framework", "job_application_id",
+  ],
+  interview_stories: [
+    "id", "user_id", "competency", "title", "best_answer", "best_score", "star",
+    "source_session_id", "times_practised", "last_practised_at", "updated_at",
   ],
   job_applications: ["id", "user_id", "job_title", "company", "location", "job_description", "status"],
   job_fit_scores: ["application_id", "user_id", "score", "strengths", "gaps", "created_at"],

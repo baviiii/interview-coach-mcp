@@ -7,6 +7,7 @@ import express, { type Request, type Response } from "express";
 
 import { getGrounding } from "./adapters/grounding/index.js";
 import { getModelProvider } from "./adapters/horus/index.js";
+import { mintVoiceSession } from "./adapters/horus/voice.js";
 import { getResearch } from "./adapters/research/index.js";
 import { config } from "./config.js";
 import { AppError } from "./errors.js";
@@ -100,6 +101,7 @@ app.post("/api/interview/answer", rest("submit_answer"));
 app.post("/api/interview/next", rest("next_question"));
 app.post("/api/interview/hint", rest("get_interview_hint"));
 app.post("/api/interview/finish", rest("finish_interview"));
+app.post("/api/interview/selection-criterion", rest("draft_selection_criterion"));
 app.post("/api/proven-tips", rest("get_proven_tips"));
 app.post("/api/resources", rest("find_proven_resources"));
 app.post("/api/resources/rank", rest("rank_learning_resources"));
@@ -107,6 +109,22 @@ app.post("/api/learning/pathway", rest("get_learning_pathway"));
 app.post("/api/recommendations/explain", rest("explain_recommendation"));
 app.post("/api/analytics/patterns", rest("analyze_patterns"));
 app.post("/api/analytics/weekly", rest("weekly_insight"));
+
+// Spoken answers: a short-lived key for the speech service, minted through
+// Horus for a signed-in learner (see adapters/horus/voice.ts). Its own limit,
+// on top of the general one: every session is paid audio.
+app.post(
+  "/api/voice/session",
+  rateLimit({ windowMs: 60 * 60_000, max: config.limits.voicePerHour }),
+  async (req: Request, res: Response) => {
+    try {
+      const auth = await resolveAuth(req.headers["authorization"]);
+      res.json(await mintVoiceSession({ userRef: auth.userId }));
+    } catch (e) {
+      sendErr(res, e);
+    }
+  },
+);
 
 // Career guidance + certification intelligence
 app.post("/api/career/guidance", rest("career_guidance"));

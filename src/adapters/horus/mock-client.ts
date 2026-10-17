@@ -15,7 +15,7 @@ import type {
  */
 export class MockHorusClient implements HorusPort {
   async infer<T = unknown>(req: InferRequest): Promise<InferResult<T>> {
-    const data = mockFor(req.task) as T;
+    const data = (shapedMock(req) ?? mockFor(req.task)) as T;
     return {
       data,
       raw: JSON.stringify(data),
@@ -42,6 +42,111 @@ export class MockHorusClient implements HorusPort {
   async graphQuery(_req: GraphQueryRequest): Promise<GraphResult> {
     return { nodes: [], edges: [], raw: { mock: true } };
   }
+}
+
+/* ── request-shaped mocks ────────────────────────────────────────────────────
+   A fixed six-question set can't exercise round types: a phone screen and a
+   technical round would come back identical offline. These read the slots the
+   server actually asked for out of the prompt, so offline mode follows the same
+   contract live mode does. */
+
+const SLOT_LINE = /^(\d+)\. stage=(\w+) \| type=(\w+) \| difficulty=(\w+) \| minutes=(\d+)/gm;
+
+const MOCK_TEXT: Record<string, string> = {
+  pitch: "(mock) Thanks for making the time. Give me the quick version of your background, and what has you looking right now?",
+  motivation: "(mock) What caught your eye about this role in particular?",
+  experience: "(mock) The ad leans hard on the core of this job. Give me one recent example of you doing exactly that.",
+  salary: "(mock) What are you looking for salary-wise — and is that base, or package including super?",
+  logistics: "(mock) What's your notice period, and do you have full working rights in Australia?",
+  questions: "(mock) That's everything from me. What would you like to know about the role or the team?",
+  warmup: "(mock) Your background points at one project you clearly owned end to end — take me into the messiest week of it.",
+  behavioral: "(mock) Tell me about a time your judgment call turned out to be wrong and someone else absorbed the cost.",
+  domain: "(mock) Walk me through how you'd diagnose the failure mode you hit most often in this work — start from the first signal you'd look at.",
+  situational: "(mock) You're a week from a committed deadline and discover the approach won't hold. What do you do first, and who hears about it?",
+  closing: "(mock) What would you need to see in your first 90 days to know this was the right move?",
+};
+
+function promptText(req: InferRequest): string {
+  return [req.system ?? "", ...(req.messages ?? []).map((m) => (typeof m.content === "string" ? m.content : ""))].join("\n");
+}
+
+function shapedMock(req: InferRequest): unknown | null {
+  const text = promptText(req);
+  if (req.task === "interview.generate_questions") {
+    const slots = [...text.matchAll(SLOT_LINE)];
+    if (!slots.length) return null;
+    return {
+      analysis: {
+        roleUnderstanding: "(mock) Role rewards depth over breadth, and evidence over assertion.",
+        keyCompetencies: ["Problem Solving", "Judgment under constraint", "Communication"],
+      },
+      questions: slots.map(([, id, stage, type, difficulty, minutes]) => ({
+        id: Number(id),
+        question: MOCK_TEXT[type!] ?? MOCK_TEXT[stage!] ?? "(mock) Talk me through how you'd handle this.",
+        stage,
+        type,
+        difficulty,
+        category: type,
+        skillsTested: ["Communication"],
+        expectedTopics: ["specifics", "outcome"],
+        timeAllocationMinutes: Number(minutes),
+        whyThisQuestion: `(mock) Slot ${id} of the round asks for this.`,
+        followUps: ["(mock) What did you personally decide?", "(mock) What would you do differently now?"],
+        signalsSought: ["Concrete, specific evidence"],
+      })),
+    };
+  }
+  if (req.task === "interview.evaluate_answer" && text.includes('"starQuotes"')) {
+    // Quote the answer itself, so offline mode exercises the same highlight
+    // path (quotes located in the answer) that live mode does.
+    const answer = /ANSWER:\n"""([\s\S]*?)"""/.exec(text)?.[1] ?? "";
+    const words = answer.trim().split(/\s+/);
+    const base = mockFor(req.task) as Record<string, unknown>;
+    return {
+      ...base,
+      cap: null,
+      starBreakdown: { situation: "present", task: "thin", action: "present", result: "missing", reflection: "missing", note: "(mock) No measured result." },
+      starQuotes:
+        words.length >= 16
+          ? [
+              { part: "situation", quote: words.slice(0, 8).join(" ") },
+              { part: "action", quote: words.slice(-8).join(" ") },
+            ]
+          : [],
+      competency: /COMPETENCIES TO CHOOSE FROM[\s\S]*?- ([a-z:-]+) —/.exec(text)?.[1] ?? null,
+      storyTitle: "(mock) The weekly reporting pack",
+    };
+  }
+  if (req.task === "interview.final_evaluation") {
+    const base = mockFor(req.task) as Record<string, unknown>;
+    if (text.includes('"storyBank"')) {
+      return {
+        ...base,
+        storyBank: [
+          { competency: "Accountability", story: "(mock) Missed the reporting deadline", verdict: "strong" },
+          { competency: "Working through disagreement", story: "(mock) Pushed back on the rollout date", verdict: "usable" },
+        ],
+        missingStories: ["(mock) Influence without authority"],
+      };
+    }
+    if (text.includes('"screenVerdict"')) {
+      return {
+        ...base,
+        screenVerdict: "Put forward with a note",
+        recruiterNote: "(mock) Clear pitch and right-to-work sorted; salary expectation sits at the top of the band.",
+      };
+    }
+    if (text.includes('"depthMap"')) {
+      return {
+        ...base,
+        depthMap: [
+          { topic: "(mock) Diagnosis", verdict: "solid", evidence: "(mock) Started from the first signal and ruled causes out in order." },
+          { topic: "(mock) Trade-offs", verdict: "shaky", evidence: "(mock) Named the cost but not what it would break." },
+        ],
+      };
+    }
+  }
+  return null;
 }
 
 function mockFor(task: string): unknown {
@@ -203,6 +308,16 @@ function mockFor(task: string): unknown {
         rubricApplied: "(mock) Technical weighting: correctness 45%, communication 20%, composure 10%, trade-offs 25%.",
         followUpQuestion: "(mock) You said it scaled — what was the first thing that fell over when it didn't?",
         suggestedFollowup: "How would your design change at 10x write volume?",
+      };
+
+    case "interview.selection_criterion":
+      return {
+        draft:
+          "(mock) In my role at a regional health service, I was asked to fix a weekly report that took two days to build. I mapped where the time went, automated the data pull and rebuilt the template, and the report now takes half a day. I learned to measure the problem before solving it.",
+        storyUsed: null,
+        starCoverage: { situation: "present", task: "present", action: "present", result: "present", reflection: "thin" },
+        gaps: ["(mock) Say who used the report and what changed for them."],
+        tips: ["(mock) Lead with the result in your first sentence."],
       };
 
     case "interview.next_question":

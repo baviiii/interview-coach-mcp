@@ -1,7 +1,43 @@
 import { z } from "zod";
 
+import { FRAMEWORK_IDS, NSW_LEVELS } from "./domain/competencies.js";
+import { ROUND_TYPES } from "./domain/interview-loop.js";
+
 /** Tool input shapes (ZodRawShape — plain objects of zod validators, as the
  *  MCP SDK expects). Identity is NEVER an input; it comes from the JWT. */
+
+/** Clamp instead of reject: LLM callers routinely ask for odd counts. */
+const loopSize = z.coerce
+  .number()
+  .int()
+  .optional()
+  .transform((n) => (n === undefined ? undefined : Math.min(Math.max(n, 1), 10)));
+
+const roundType = z
+  .enum(ROUND_TYPES)
+  .optional()
+  .describe(
+    "Which kind of round: full (a mixed final-round loop, the default), behavioral (past situations only, STAR), technical (the work itself), or screen (a recruiter's first phone call: pitch, motivation, salary, logistics).",
+  );
+
+const framework = z
+  .enum(FRAMEWORK_IDS)
+  .optional()
+  .describe(
+    "Public-sector capability framework the panel marks against: aps (APS Integrated Leadership System) or nsw (NSW Public Sector Capability Framework). Story questions then target its capabilities.",
+  );
+
+const frameworkLevel = z.enum(NSW_LEVELS).optional().describe("NSW capability level to pitch story questions at.");
+
+/** A question to ask exactly as given — practising one question again. */
+const fixedQuestion = z.object({
+  question: z.string().min(5).max(2000),
+  stage: z.string().max(40).optional(),
+  type: z.string().max(40).optional(),
+  difficulty: z.enum(["easy", "medium", "hard", "expert"]).optional(),
+  expectedTopics: z.array(z.string().max(200)).max(10).optional(),
+  competency: z.string().max(60).optional(),
+});
 
 /** A saved job is one of the learner’s own job-tracker applications. */
 const JOB_ID_HELP =
@@ -27,11 +63,10 @@ export const generateQuestionsInput = {
   focusAreas: z.array(z.string()).optional(),
   // Clamp instead of reject: LLM callers routinely ask for 1-2 questions,
   // and a hard minimum turns that into a tool error mid-conversation.
-  count: z.coerce
-    .number()
-    .int()
-    .optional()
-    .transform((n) => (n === undefined ? undefined : Math.min(Math.max(n, 1), 10))),
+  count: loopSize,
+  roundType,
+  framework,
+  frameworkLevel,
 };
 
 export const startSessionInput = {
@@ -41,11 +76,21 @@ export const startSessionInput = {
   jobDescription: z.string().max(20000).optional(),
   // Round focus (e.g. from build_interview_plan) — steers question coverage.
   focusAreas: z.array(z.string().max(200)).max(12).optional(),
-  questionCount: z.coerce
-    .number()
-    .int()
-    .optional()
-    .transform((n) => (n === undefined ? undefined : Math.min(Math.max(n, 1), 10))),
+  /** How many questions to generate now. */
+  questionCount: loopSize,
+  /**
+   * How long the whole round will be, when that's more than questionCount —
+   * Realistic mode generates only the opener and asks the rest adaptively, but
+   * the opener must still be slot 1 of the round actually planned.
+   */
+  plannedCount: loopSize,
+  roundType,
+  framework,
+  frameworkLevel,
+  /** Ask these exact questions instead of generating — "practise this question again". */
+  fixedQuestions: z.array(fixedQuestion).min(1).max(5).optional(),
+  /** Put this competency's story first (practising one story from the library). */
+  competency: z.string().max(60).optional(),
 };
 
 export const submitAnswerInput = {
@@ -58,6 +103,13 @@ export const submitAnswerInput = {
   expectedTopics: z.array(z.string()).optional(),
   questionId: z.string().uuid().optional(),
   timeTakenSeconds: z.number().int().nonnegative().optional(),
+  roundType,
+  framework,
+  /** 1 for a first answer; 2+ when they're retrying the same question. */
+  attempt: z.number().int().min(1).max(20).optional(),
+  /** Their last attempt at this question, so feedback can say what changed. */
+  previousAnswer: z.string().max(20000).optional(),
+  previousScore: z.number().min(0).max(10).optional(),
 };
 
 export const nextQuestionInput = {
@@ -66,12 +118,22 @@ export const nextQuestionInput = {
   seniority: z.string().optional(),
   // Round focus (e.g. from build_interview_plan) — steers what gets probed next.
   focusAreas: z.array(z.string().max(200)).max(12).optional(),
+  /** The round's planned length, so the next slot is the one actually planned. */
+  plannedCount: loopSize,
+  roundType,
+  framework,
+  frameworkLevel,
 };
 
 export const finishInput = {
   sessionId: z.string().uuid(),
   field: z.string().min(1),
   seniority: z.string().optional(),
+  roundType,
+  framework,
+  plannedCount: loopSize,
+  /** Wall-clock length of the session, for the learner's practice-time totals. */
+  durationSeconds: z.number().int().nonnegative().max(86400).optional(),
 };
 
 export const rankResourcesInput = {
@@ -203,6 +265,20 @@ export const trackResourceProgressInput = {
   progressPercent: z.number().int().min(0).max(100).optional(),
   rating: z.number().int().min(1).max(5).optional(),
   notes: z.string().max(2000).optional(),
+};
+
+/* ── selection criteria ───────────────────────────────────────────────────── */
+
+export const selectionCriterionInput = {
+  /** The criterion as the ad or role description words it. */
+  criterion: z.string().min(10).max(2000),
+  framework,
+  frameworkLevel,
+  /** Australian applications usually cap each response; 250-350 words is common. */
+  wordLimit: z.number().int().min(100).max(1000).optional(),
+  jobDescription: z.string().max(20000).optional(),
+  /** Build from this story in their library rather than letting the coach pick. */
+  competency: z.string().max(60).optional(),
 };
 
 /* ── interview hint + profile ─────────────────────────────────────────────── */

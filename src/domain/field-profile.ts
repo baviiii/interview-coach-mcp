@@ -27,6 +27,13 @@ export const FORMAT_GUIDE: Record<string, string> = {
   system_design: "design a software system under stated constraints",
   behavioral: "a specific past situation, their own actions and a measurable result (STAR)",
   situational: "judgment on a realistic dilemma this role hits",
+  // The parts of a recruiter phone screen (domain/interview-loop.ts).
+  pitch: "the recruiter's opener — their background and why they're looking, in about a minute",
+  motivation: "why this role, and this employer when the ad names one",
+  experience: "a quick, concrete check that they've done the core thing the job needs",
+  salary: "salary expectations — a range, and whether it's base or package including super",
+  logistics: "notice period, start date, working rights and location or hybrid fit",
+  questions: "the questions they'd ask the recruiter",
 };
 
 export interface ProfileCredential {
