@@ -119,7 +119,7 @@ app.post(
   async (req: Request, res: Response) => {
     try {
       const auth = await resolveAuth(req.headers["authorization"]);
-      res.json(await mintVoiceSession({ userRef: auth.userId }));
+      res.json(await mintVoiceSession({ userRef: auth.userId, userToken: auth.jwt }));
     } catch (e) {
       sendErr(res, e);
     }

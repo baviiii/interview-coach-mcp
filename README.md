@@ -142,10 +142,13 @@ real skills it probes; the model only writes the content. That is what makes the
   EL/SES names; NSW Capability Framework v2).
 - **Selection criteria.** `draft_selection_criterion` writes a first-person STAR response to one criterion from
   the learner's own stories and résumé, within a word limit it counts itself. It never invents facts.
-- **Spoken answers.** `POST /api/voice/session` asks Horus (`/voice/session`) for a short-lived, listen-only
-  realtime key for the signed-in learner (rate-limited per learner, `VOICE_RATE_PER_HOUR`). The browser
-  streams the microphone to the speech service directly and gets the transcript back; no audio touches this
-  server. 503 unless `HORUS_MODE=http` with a key.
+- **Spoken answers.** `POST /api/voice/session` asks for a short-lived, listen-only realtime key for the
+  signed-in learner. It goes where `/infer` goes: `{HORUS_BASE_URL}/voice-session`, CareerCraft's
+  `voice-session` function, which holds the Horus key, requires this server's key **and** the learner's token,
+  limits each person to 20 an hour (in the database), and asks Horus (`/api/voice/session`) to mint.
+  `HORUS_VOICE_URL` overrides the address. This server also caps it (`VOICE_RATE_PER_HOUR`, in memory). The
+  browser streams the microphone to the speech service directly; no audio touches this server. 503 unless
+  `HORUS_MODE=http` with a key.
 - **Is the score meaningful?** `npm run score-check` (real model only) scores strong and weak answers three
   times each and fails if the strong one doesn't win by 2+ points or a score drifts 1.5+ between runs. Run it
   before changing a rubric or the evaluator prompt.
@@ -469,7 +472,7 @@ src/
 - **Tests cover mock mode, not a live LLM** — CI runs typecheck + unit tests + an offline e2e golden path (start → answer → finish over real HTTP). Tool I/O against a *live* LLM is still unverified by CI.
 - **DB failures are best-effort but no longer silent** — failed writes log a `[persist]` warning and `_meta.persisted` reflects the truth; the response itself still succeeds by design.
 - **Rate limit is single-instance** — the in-memory limiter guards one process; put a shared limiter in front if you scale out.
-- **Voice interviews, calendar export** — not built.
+- **Voice** is spoken answers only (dictation with delivery stats); a fully spoken interviewer is not built. **Calendar export** — not built.
 
 ---
 

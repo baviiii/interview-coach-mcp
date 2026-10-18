@@ -31,6 +31,11 @@ export const config = {
     apiKey: opt("HORUS_API_KEY"),
     ragUrl: opt("HORUS_RAG_URL"),
     graphUrl: opt("HORUS_GRAPH_URL"),
+    // Spoken answers. Defaults to {base}/voice-session, CareerCraft's
+    // voice-session function (the base is its functions URL, as for /infer).
+    // Point it at Horus's own /api/voice/session to skip the shim; the API key
+    // must then be a Horus tenant key.
+    voiceUrl: opt("HORUS_VOICE_URL"),
   },
 
   // Direct OpenAI-compatible gateway (used when HORUS_MODE=gateway). This is the
