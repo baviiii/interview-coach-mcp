@@ -58,16 +58,16 @@ Your app or MCP client
 
 ## What can it do?
 
-Roughly **27 tools** across six areas. Run `npm run smoke` to list them all.
+**29 tools** across six areas. Run `npm run smoke` to list them all.
 
 | Area | What you get |
 |------|----------------|
 | **Interview** | Prep plan, questions, full **structured** mock session, hints, adaptive next question, final evaluation |
 | **Career** | Guidance, roadmaps, cert analysis/recommendations, log certs, set goal, refresh persona |
-| **Study** | Study plans, spaced-repetition drills, concept explanations, resource progress |
+| **Study** | Study plans, spaced-repetition drills (answers marked by the coach), concept explanations, resource progress by link |
 | **Learning** | One-call learning pathway, ranked resources, recommendation explanations |
 | **Proof** | Tips/resources with optional source links — or `unverified` |
-| **Analytics** | Patterns and weekly insights from session history |
+| **Analytics** | A read of their practice patterns (after three finished sessions) and a weekly note |
 
 Plus **5 MCP resources** (e.g. `careercraft://learner/context`) for agents to read without a tool call.
 
@@ -155,6 +155,33 @@ real skills it probes; the model only writes the content. That is what makes the
 
 All of it is stored by CareerCraft migration `20261017010000_interview_practice_loop.sql`, written in
 best-effort updates of their own, so a database without it loses the extra detail, never an answer.
+
+---
+
+## Results that come back, drills that are marked, resources that are tracked
+
+The learning side keeps what it learns instead of starting over on every visit.
+
+- **Saved results.** Career guidance, roadmaps, certification plans and reviews, learning pathways, the
+  weekly note and the pattern read are saved whole in `ai_recommendations.payload`, against the job they
+  were for (`subject`, trimmed and lower-cased, plus `level` for certification plans). Saving one expires
+  the older ones for the same job, so the newest active row is the current one. A site reads it straight from
+  the database (`context/saved-results.ts` documents the key), and the weekly note and pattern read carry
+  `basedOn`, the session they were written after, so they're asked for again only once there's a newer one.
+- **Drills are marked.** `record_drill_result` takes the learner's `answerText` with the `drill` and the
+  coach marks each of the drill's ideal points `covered`, `partial` or `missing`, quoting the words that
+  show it. The score is worked out on the server (`buildDrillScore`): covered counts 1, partial half; a mark
+  whose quote isn't in the answer drops a step; a wrong or unsafe claim caps it at 4. A self-rated `score`
+  still works when no answer is written. `npm run score-check` covers a drill.
+- **Any resource can be tracked.** `track_resource_progress` takes a `url` (with `title` and the `skill`
+  it builds) as well as a catalogue `resourceId`. The catalogue is often empty, and every resource the coach
+  shows is a link. Finishing one credits its skill once; finished links are never recommended again, and saved
+  or started ones come back with `myStatus`. Pathway resources say which skill they build (`forSkill`).
+- **Pattern read.** `analyze_patterns` waits for three finished sessions (`{ ready: false, sessionsNeeded }`
+  before that), then reads results by round type, STAR habits, answer length and the story library, and must
+  cite the evidence for every weakness.
+
+Needs CareerCraft migration `20261031000000_coach_saved_results_and_resource_links.sql`.
 
 ---
 
@@ -254,7 +281,7 @@ This is what **really** talks to the outside world today — not what's on a roa
 |--------|-------|------|----------|
 | **Supabase** | ✅ Yes (prod) | Auth + all learner data | URL + anon key |
 | **AI gateway** (`HORUS_MODE=gateway`) | ✅ Yes | All LLM generation (e.g. Gemini via Lovable gateway) | `MODEL_GATEWAY_KEY` |
-| **Hacker News** (`hn.algolia.com`) | ✅ Yes | **Research** (questions/resources, any field) + proof links | No |
+| **Hacker News** (`hn.algolia.com`) | ✅ Yes | **Research** (questions/resources, any field) + proof links — **technical jobs only** (field profile `technicalWeight` ≥ 0.6); for other jobs its links are skipped and tips cite the researched post they answer | No |
 | **Wikipedia** (Action API) | ✅ Yes | **Research** — role facts + the credentials/licenses a field expects | No |
 | **Reddit** (`reddit.com`) | ✅ Yes | **Research** ("users who had issues") + proof. Anonymous often 403s → set free `REDDIT_CLIENT_ID/SECRET` for app-only OAuth | No (free creds recommended) |
 | **Horus RAG** (`ragSearch`) | ✅ When provided | **Now called by research** (`HorusRagResearchSource`) — your curated corpus, if the provider implements `ragSearch` | Horus |
@@ -305,7 +332,7 @@ cp .env.example .env
 | `HORUS_MODE=mock` | Fake AI — dev only |
 | `HORUS_MODE=gateway` | Real LLM via OpenAI-compatible API |
 | `HORUS_MODE=http` | Horus for RAG/graph; generation needs `/infer` (not shipped) or use gateway |
-| `GROUNDING_MODE=hn` | Real Hacker News proof links |
+| `GROUNDING_MODE=hn` | Real Hacker News proof links (used for technical jobs only) |
 | `GROUNDING_MODE=reddit` | Real Reddit proof links |
 | `GROUNDING_MODE=mock` | Fake proof sources |
 | `MARKET=Australia` | The country learners are job-hunting in (default `Australia`). Every model call is told to use its regulators, licensing, qualification framework, spelling and currency, and to flag state/territory differences; licence, course and role-fact research is scoped to it first |
@@ -473,6 +500,7 @@ src/
 - **DB failures are best-effort but no longer silent** — failed writes log a `[persist]` warning and `_meta.persisted` reflects the truth; the response itself still succeeds by design.
 - **Rate limit is single-instance** — the in-memory limiter guards one process; put a shared limiter in front if you scale out.
 - **Voice** is spoken answers only (dictation with delivery stats); a fully spoken interviewer is not built. **Calendar export** — not built.
+- **CareerCraft's `infer` function fails under parallel long calls** — seen 2026-10-30: three answer evaluations sent at once, two came back `503 BOOT_ERROR` ("Function failed to start") after ~10s while one succeeded; single calls and short parallel calls are fine. Realistic mode overlaps a background evaluation with the next question, so live sessions can hit it. `score-check` runs its repeats one at a time for this reason. The fix belongs in that function (or Horus), not here.
 
 ---
 
