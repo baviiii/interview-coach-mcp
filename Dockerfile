@@ -19,6 +19,12 @@ RUN npm run build
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
+
+# Lambda Web Adapter. Inside Lambda it turns each invocation into an HTTP
+# request to this server; anywhere else (docker run, CI) it is an unused file.
+# Its settings (port, readiness path, response streaming) are env vars on the
+# function, in horus-platform's infrastructure/tofu/envs/aws-dev/mcp.tf.
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt/extensions/lambda-adapter
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist

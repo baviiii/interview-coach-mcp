@@ -492,14 +492,23 @@ CI (`.github/workflows/ci.yml`) runs typecheck + unit tests + the offline e2e
 golden path on every push.
 
 **Production deploys are automatic.** Every push to `main` that passes CI builds
-the image, pushes it to `ghcr.io/baviiii/interview-coach-mcp:<commit>` (public —
-it holds only what this repo already shows), and rolls the Azure Container App
-onto it, failing the run unless the new revision comes up healthy. Settings and
-secrets are not in the image: they live on the container app and survive every
-deploy, so change them there (`az containerapp update --set-env-vars …` /
-`az containerapp secret set …`), never in the workflow. GitHub logs in to Azure
-with OIDC as the `id-gh-interview-coach-mcp-deploy` managed identity, which only
-accepts tokens from this repo's `main` — there are no stored credentials.
+the image, pushes it to the private ECR repository `interview-coach-mcp`
+(`<account>.dkr.ecr.ap-southeast-2.amazonaws.com/interview-coach-mcp:<commit>`)
+and rolls the Lambda function `horus-dev-interview-coach-mcp` onto it, failing
+the run unless the new code serves `/health`. The image carries the Lambda Web
+Adapter, so the same Express server runs unchanged inside Lambda, behind a
+public function URL; every `/mcp` and `/api` call still needs a Supabase JWT.
+
+Settings and secrets are not in the image: they live on the function and are
+managed by OpenTofu in horus-platform (`infrastructure/tofu/envs/aws-dev/mcp.tf`,
+values in that folder's gitignored `terraform.tfvars`), so change them there and
+apply, never in the workflow. GitHub logs in to AWS with OIDC as the
+`horus-dev-interview-coach-mcp-deploy` role, which only accepts tokens from this
+repo's `main`; there are no stored credentials.
+
+The function is created by OpenTofu only once a first image exists: the first
+deploy just pushes the image, then `mcp_image_tag` is set to that commit and
+applied. From then on, deploys roll the function themselves.
 
 ---
 
