@@ -6,7 +6,9 @@ on:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to Ubuntu 26 on 2026-10-19, and the image
+    # boot check has failed there since. 24.04 is what last passed.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,7 +33,13 @@ jobs:
       # every push — a broken build or start command then never reaches main.
       - name: Image boots
         run: |
-          docker build -t mcp:ci .
+          # Failures are reported as annotations too, which show on the run page
+          # without signing in, unlike the log.
+          if ! docker build -t mcp:ci . > build.log 2>&1; then
+            echo "::error title=docker build failed::$(tail -n 15 build.log | paste -sd ' ' - | cut -c1-900)"
+            cat build.log
+            exit 1
+          fi
           start=$(date +%s%N)
           # A database address that refuses connections: real sign-in code runs,
           # but nothing leaves the runner.
@@ -44,7 +52,11 @@ jobs:
             fi
             sleep 0.5
           done
-          curl -fsS localhost:8787/health > /dev/null || { docker logs mcp; exit 1; }
+          if ! curl -fsS localhost:8787/health > /dev/null; then
+            echo "::error title=image did not become healthy::$(docker logs mcp 2>&1 | tail -n 15 | paste -sd ' ' - | cut -c1-900)"
+            docker logs mcp
+            exit 1
+          fi
 
           # /health doesn't touch the database client, so it stayed green while
           # every signed-in request crashed (supabase-js on Node 20). A made-up
@@ -74,7 +86,9 @@ jobs:
   deploy:
     needs: checks
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to Ubuntu 26 on 2026-10-19, and the image
+    # boot check has failed there since. 24.04 is what last passed.
+    runs-on: ubuntu-24.04
     permissions:
       id-token: write
       contents: read
