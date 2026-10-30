@@ -64,6 +64,19 @@ export interface StorySnapshot {
   timesPractised: number;
 }
 
+/** A resource the learner saved, started or finished (user_resources). */
+export interface ResourceSnapshot {
+  title: string;
+  /** Set for links; catalogue rows may have none. */
+  url?: string;
+  /** The catalogue row, when it is one. */
+  resourceId?: string;
+  status: "saved" | "in_progress" | "completed";
+  skill?: string;
+  rating?: number | null;
+  completedAt?: string | null;
+}
+
 export interface LearnerContext {
   userId: string;
   /** AI-derived persona from onboarding (profiles.ai_persona). */
@@ -88,6 +101,8 @@ export interface LearnerContext {
   recentQuestionThemes?: string[];
   /** Their story library: behavioural rounds aim at competencies with no or weak stories. */
   stories?: StorySnapshot[];
+  /** Resources they're working through or have finished: never recommended again once finished. */
+  resources?: ResourceSnapshot[];
   patterns?: {
     overallTrend?: string;
     strongestQuestionType?: string;

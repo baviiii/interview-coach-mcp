@@ -23,11 +23,20 @@ function contextBlock(ctx?: LearnerContext): string {
   const weak = ctx.weakSkills.map((s) => `${s.name} (${s.proficiency}/100, ${s.trend})`).join(", ");
   const strong = ctx.strongSkills.map((s) => s.name).join(", ");
   const certs = (ctx.certifications ?? []).map((c) => `${c.name}${c.status !== "active" ? ` [${c.status}]` : ""}`).join("; ");
+  const resources = ctx.resources ?? [];
+  const finished = resources.filter((r) => r.status === "completed").slice(0, 6).map((r) => r.title).join("; ");
+  const underway = resources
+    .filter((r) => r.status !== "completed")
+    .slice(0, 6)
+    .map((r) => `${r.title} (${r.status === "in_progress" ? "started" : "saved"})`)
+    .join("; ");
   const lines = [
     "\nCANDIDATE CONTEXT (personalize to this — do not read it back verbatim):",
     weak ? `- Weakest tested skills: ${weak}` : "",
     strong ? `- Strongest skills: ${strong}` : "",
     certs ? `- Certifications held: ${certs}` : "",
+    finished ? `- Resources already finished (never recommend these again; build on them): ${finished}` : "",
+    underway ? `- Resources they're working through: ${underway}` : "",
     ctx.patterns?.weakestQuestionType ? `- Struggles most with: ${ctx.patterns.weakestQuestionType} questions` : "",
     ctx.recentOverallScores.length ? `- Recent session scores: ${ctx.recentOverallScores.join(", ")}` : "",
     ctx.job ? `- Target job: ${ctx.job.title} @ ${ctx.job.company}` : "",
@@ -684,10 +693,10 @@ export function rankResourcesPrompt(args: {
   ctx?: LearnerContext;
 }): PromptPair {
   const system = `You are a learning strategist. Rank the candidate resources for THIS learner and goal.
-For each, give a priority (1 = do first) and a one-sentence "whyRecommended" grounded in their weak skills and goal.
+For each, give a priority (1 = do first), a one-sentence "whyRecommended" grounded in their weak skills and goal, and "forSkill": the one target skill it builds most, copied exactly from TARGET SKILLS.
 
 Return ONLY JSON:
-{ "ranked": [{ "id": string, "priority": number, "whyRecommended": string }] }`;
+{ "ranked": [{ "id": string, "priority": number, "whyRecommended": string, "forSkill": string }] }`;
 
   const list = args.candidates
     .map((c) => `- ${c.id} :: ${c.title} [${c.type}${c.difficulty ? "/" + c.difficulty : ""}${c.provider ? ", " + c.provider : ""}]`)
@@ -939,6 +948,55 @@ DIFFICULTY: ${args.difficulty} (must match exactly)
 FIELD: ${args.field ?? args.ctx.targetField ?? "their field"}${contextBlock(args.ctx)}
 
 Choose the drill "type" that best builds this skill at this level. "hands_on" means doing the real work of this field in miniature — writing code for a developer, calculating a dose for a nurse, drafting a clause for a paralegal. timeboxMinutes between 5 and 25.`;
+
+  return { system, user };
+}
+
+/**
+ * Marks a drill answer against the drill's own ideal points. The model marks
+ * and quotes; the score is worked out from the marks (domain/scoring.ts,
+ * buildDrillScore), so it can't drift from what the ticks on screen show.
+ */
+export function drillEvaluationPrompt(args: {
+  skill: string;
+  field?: string;
+  drill: { prompt: string; type?: string; difficulty?: string; idealAnswerPoints: string[] };
+  answer: string;
+}): PromptPair {
+  const system = `You are marking one practice drill. Judge only what the answer actually says, against the ideal points you are given — not against a different answer you would have written.
+
+For each ideal point, in the order given:
+- "covered": the answer makes this point correctly and specifically.
+- "partial": the answer gestures at it, but vaguely, incompletely, or with a small error.
+- "missing": the answer doesn't make it.
+For "covered" and "partial", "quote" must be words copied exactly from the answer that show it (8 or more characters, no paraphrase). If you can't quote it, it isn't there: mark it "missing".
+
+If the answer states something wrong, or something unsafe or non-compliant for this field (a dose, a safety step, a legal requirement, a standard), set "cap" and quote the claim in its reason. Otherwise "cap" is null.
+
+Feedback is for the learner, in plain words: what worked, what's missing, and one concrete thing to try next time.
+
+Return ONLY JSON:
+{
+  "points": [{ "mark": "covered|partial|missing", "quote": "exact words from the answer, or null", "note": "one short line on why" }],
+  "cap": null | { "reason": "the wrong or unsafe claim, quoted, and why it's wrong" },
+  "whatWorked": "one or two sentences",
+  "whatsMissing": "one or two sentences",
+  "oneThingToTry": "one concrete instruction for the next attempt",
+  "score": number
+}
+"score" is your overall impression out of 10; it is only used if the points can't be.`;
+
+  const points = args.drill.idealAnswerPoints.map((p, i) => `${i + 1}. ${p}`).join("\n");
+  const user = `SKILL: ${args.skill}
+FIELD: ${args.field ?? "their field"}
+DRILL (${args.drill.type ?? "exercise"}, ${args.drill.difficulty ?? "medium"}):
+${args.drill.prompt}
+
+IDEAL POINTS — mark each, in this order:
+${points || "(none given: mark nothing, judge the answer overall and give a score)"}
+
+ANSWER:
+"""${args.answer}"""`;
 
   return { system, user };
 }

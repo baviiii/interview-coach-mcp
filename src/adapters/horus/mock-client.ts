@@ -117,6 +117,26 @@ function shapedMock(req: InferRequest): unknown | null {
       storyTitle: "(mock) The weekly reporting pack",
     };
   }
+  if (req.task === "study.evaluate_drill") {
+    // Covers the first point with a quote from the answer and leaves the rest
+    // missing, so offline mode exercises the quote check and the coverage maths.
+    const answer = /ANSWER:\n"""([\s\S]*?)"""/.exec(text)?.[1] ?? "";
+    const ideal = /IDEAL POINTS[^\n]*\n([\s\S]*?)\n\nANSWER:/.exec(text)?.[1] ?? "";
+    const points = [...ideal.matchAll(/^\d+\. .+$/gm)].length;
+    const words = answer.trim().split(/\s+/);
+    return {
+      points: Array.from({ length: points }, (_, i) =>
+        i === 0 && words.length >= 4
+          ? { mark: "covered", quote: words.slice(0, 6).join(" "), note: "(mock) Made this point." }
+          : { mark: "missing", quote: null, note: "(mock) Not in the answer." },
+      ),
+      cap: null,
+      whatWorked: "(mock) You opened with the core idea.",
+      whatsMissing: "(mock) The second point never came up.",
+      oneThingToTry: "(mock) Name the trade-off before you choose.",
+      score: 5,
+    };
+  }
   if (req.task === "interview.final_evaluation") {
     const base = mockFor(req.task) as Record<string, unknown>;
     if (text.includes('"storyBank"')) {

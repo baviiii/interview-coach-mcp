@@ -292,6 +292,26 @@ function normalise(text: string): { flat: string; map: number[] } {
   return { flat, map };
 }
 
+type Span = { start: number; end: number };
+
+/** Finds quotes in one answer, normalising the answer once. Quotes under 8 characters never match. */
+function quoteFinder(answer: string): (quote: unknown) => Span | null {
+  const hay = normalise(answer);
+  return (quote) => {
+    if (typeof quote !== "string") return null;
+    const needle = normalise(quote.replace(/^["'\s.…]+|["'\s.…]+$/g, "")).flat;
+    if (needle.length < 8) return null;
+    const at = hay.flat.indexOf(needle);
+    if (at < 0) return null;
+    return { start: hay.map[at]!, end: hay.map[at + needle.length - 1]! + 1 };
+  };
+}
+
+/** Where a quote sits in the answer (ignoring case, quote style and spacing), or null if it isn't there. */
+export function findQuote(answer: string, quote: unknown): Span | null {
+  return answer ? quoteFinder(answer)(quote) : null;
+}
+
 /**
  * Where the evaluator's quotes sit in the answer. A quote that isn't actually
  * in the answer (the model paraphrased, or invented) is dropped rather than
@@ -299,22 +319,90 @@ function normalise(text: string): { flat: string; map: number[] } {
  */
 export function locateQuotes(answer: string, quotes: unknown): Highlight[] {
   if (!Array.isArray(quotes) || !answer) return [];
-  const hay = normalise(answer);
+  const find = quoteFinder(answer);
   const found: Highlight[] = [];
   for (const q of quotes.slice(0, 12)) {
     const part = STAR_PARTS.find((p) => p === String((q as { part?: unknown })?.part ?? "").toLowerCase());
-    const quote = (q as { quote?: unknown })?.quote;
-    if (!part || typeof quote !== "string") continue;
-    const needle = normalise(quote.replace(/^["'\s.…]+|["'\s.…]+$/g, "")).flat;
-    if (needle.length < 8) continue;
-    const at = hay.flat.indexOf(needle);
-    if (at < 0) continue;
-    const start = hay.map[at]!;
-    const end = hay.map[at + needle.length - 1]! + 1;
-    if (found.some((h) => start < h.end && end > h.start)) continue;
-    found.push({ part, start, end });
+    if (!part) continue;
+    const span = find((q as { quote?: unknown })?.quote);
+    if (!span || found.some((h) => span.start < h.end && span.end > h.start)) continue;
+    found.push({ part, ...span });
   }
   return found.sort((a, b) => a.start - b.start);
+}
+
+/* ── drills ───────────────────────────────────────────────────────────── */
+
+export const DRILL_MARKS = ["covered", "partial", "missing"] as const;
+export type DrillMark = (typeof DRILL_MARKS)[number];
+
+/** The cap for a drill answer that says something wrong or unsafe, however much else it covers. */
+export const DRILL_CAP = 4;
+
+export interface DrillPoint {
+  /** The ideal-answer point, as the drill stated it. */
+  point: string;
+  mark: DrillMark;
+  /** Where the evidence sits in the answer, when it was found. */
+  quote: (Span & { text: string }) | null;
+  note: string;
+}
+
+export interface DrillScore {
+  points: DrillPoint[];
+  /** Σ credit / points, 0–1: covered counts 1, partial 0.5. */
+  coverage: number;
+  cap: ScoreCap | null;
+  final: number;
+  /** True when there were no ideal points to mark and the model's own score stood in. */
+  fellBack: boolean;
+}
+
+const DRILL_CREDIT: Record<DrillMark, number> = { covered: 1, partial: 0.5, missing: 0 };
+const ONE_STEP_DOWN: Record<DrillMark, DrillMark> = { covered: "partial", partial: "missing", missing: "missing" };
+
+/**
+ * A drill's score, from the evaluator's marks against the drill's own ideal
+ * points. The model says which points the answer covers and quotes the words
+ * that show it; the score is the share of points covered (partial counts
+ * half), out of 10. Credit needs evidence: a mark whose quote isn't in the
+ * answer drops one step. A wrong or unsafe claim caps the drill at DRILL_CAP.
+ */
+export function buildDrillScore(
+  answer: string,
+  idealPoints: string[],
+  marks: unknown,
+  cap: unknown,
+  modelScore: unknown,
+): DrillScore {
+  const find = quoteFinder(answer);
+  const list = Array.isArray(marks) ? marks : [];
+  const points: DrillPoint[] = idealPoints.map((point, i) => {
+    const raw = (list[i] ?? {}) as { mark?: unknown; quote?: unknown; note?: unknown };
+    const said = DRILL_MARKS.find((m) => m === String(raw.mark ?? "").toLowerCase()) ?? "missing";
+    const span = said === "missing" ? null : find(raw.quote);
+    return {
+      point,
+      mark: said !== "missing" && !span ? ONE_STEP_DOWN[said] : said,
+      quote: span ? { ...span, text: answer.slice(span.start, span.end) } : null,
+      note: typeof raw.note === "string" ? raw.note.trim().slice(0, 300) : "",
+    };
+  });
+
+  const fellBack = points.length === 0;
+  const coverage = fellBack ? 0 : points.reduce((sum, p) => sum + DRILL_CREDIT[p.mark], 0) / points.length;
+  const base = fellBack
+    ? clamp10(typeof modelScore === "number" && Number.isFinite(modelScore) ? modelScore : 0)
+    : coverage * 10;
+  const reason = (cap as { reason?: unknown } | null | undefined)?.reason;
+  const capped = typeof reason === "string" && reason.trim() && base > DRILL_CAP ? { max: DRILL_CAP, reason: reason.trim() } : null;
+  return {
+    points,
+    coverage: round1(coverage * 100) / 100,
+    cap: capped,
+    final: round1(capped ? DRILL_CAP : base),
+    fellBack,
+  };
 }
 
 /**

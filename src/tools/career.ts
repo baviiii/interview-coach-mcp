@@ -23,7 +23,7 @@ import {
 import { roadmapSkeleton } from "../domain/roadmap.js";
 import * as S from "../schemas.js";
 import type { LearnerContext } from "../types.js";
-import { err, ok, researchMeta, researchSafely } from "./_util.js";
+import { err, groundingFits, ok, researchMeta, researchSafely } from "./_util.js";
 import type { ToolDeps } from "./interview.js";
 
 /**
@@ -237,7 +237,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
       let proof = null;
       try {
         const top = res.data.recommendations?.[0]?.name;
-        if (top) {
+        if (top && groundingFits(grounding, profile)) {
           proof = await grounding.findEvidence({
             claim: `${top} certification worth it for ${fieldLabel}`,
             skill: args.targetField ?? ctx.goal?.targetField,

@@ -31,7 +31,7 @@ import {
 } from "../domain/prompts.js";
 import * as S from "../schemas.js";
 import type { AuthContext } from "../server/auth.js";
-import { clampScore, num, ok, researchMeta, researchSafely } from "./_util.js";
+import { clampScore, groundingFits, num, ok, researchMeta, researchSafely } from "./_util.js";
 
 export interface ToolDeps {
   auth: AuthContext;
@@ -357,6 +357,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       inputSchema: S.submitAnswerInput,
     },
     async (args) => {
+      // Only needed for the proof link at the end (is a tech-only source on
+      // topic for this job?); resolved while the answer is being marked.
+      const profile = resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt });
       const [ctx, stored, transcript] = await Promise.all([
         assembleLearnerContext(auth.db, auth.userId, { field: args.field, seniority: args.seniority }),
         readSessionQuestions(auth.db, args.sessionId),
@@ -495,7 +498,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       try {
         const tips = (res.data as { coachingTips?: Array<{ tip?: string }> }).coachingTips;
         const top = Array.isArray(tips) ? tips[0]?.tip : undefined;
-        if (top) proof = await grounding.findEvidence({ claim: top, skill: args.field });
+        if (top && groundingFits(grounding, await profile)) {
+          proof = await grounding.findEvidence({ claim: top, skill: args.field });
+        }
       } catch {
         /* grounding best-effort */
       }

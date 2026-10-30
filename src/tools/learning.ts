@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { FieldResearch } from "../adapters/research/index.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { resolveFieldProfile } from "../context/field-profile.js";
+import { finishedUrls, normaliseUrl, statusFor, type ResourceStatus } from "../context/resources.js";
 import { saveResult } from "../context/saved-results.js";
 import { rankResourcesPrompt, studyPlanPrompt, suggestResourcesPrompt } from "../domain/prompts.js";
 import { drillDifficulty, nextReviewInDays, pickDrillSkill } from "../domain/spaced-repetition.js";
@@ -27,6 +28,10 @@ interface Candidate {
 export interface RankedResource extends Candidate {
   priority: number;
   whyRecommended: string;
+  /** The target skill it builds: finishing it credits this skill. */
+  forSkill?: string;
+  /** The learner's own status, when they've saved or started it. */
+  myStatus?: ResourceStatus;
 }
 
 export interface ResourceResult {
@@ -107,7 +112,12 @@ async function rankResources(
   }));
   if (research.partial) reasons.push("some research sources were unavailable (see _meta.research)");
 
-  const candidates = [...catalog, ...community].slice(0, Math.max(max, 8));
+  // What they've already finished is never recommended again.
+  const done = finishedUrls(ctx.resources);
+  const doneIds = new Set((ctx.resources ?? []).filter((r) => r.status === "completed").map((r) => r.resourceId));
+  const candidates = [...catalog, ...community]
+    .filter((c) => !doneIds.has(c.id) && !(c.url && done.has(normaliseUrl(c.url)!)))
+    .slice(0, Math.max(max, 8));
 
   // 3. Nothing real to rank — say what to do anyway, clearly unsourced.
   if (candidates.length === 0) {
@@ -132,12 +142,13 @@ async function rankResources(
       source: "community" as const,
       priority: r.priority ?? i + 1,
       whyRecommended: r.whyRecommended ?? `Targets ${skills[0] ?? field}.`,
+      forSkill: skills[0],
     }));
     return { resources: suggested, unsourced: true, research, reasons };
   }
 
   // 4. Rank whatever we have for THIS learner.
-  let ranked: Array<{ id: string; priority: number; whyRecommended: string }> = [];
+  let ranked: Array<{ id: string; priority: number; whyRecommended: string; forSkill?: unknown }> = [];
   try {
     const { system, user } = rankResourcesPrompt({ goal: args.goal, skills, candidates, ctx });
     const res = await horus.infer<{ ranked?: typeof ranked }>({
@@ -155,19 +166,19 @@ async function rankResources(
   }
 
   const byId = new Map(candidates.map((c) => [c.id, c]));
-  const fromModel = ranked
-    .map((r) => {
-      const c = byId.get(r.id);
-      return c ? { ...c, priority: r.priority, whyRecommended: r.whyRecommended } : null;
-    })
-    .filter((x): x is RankedResource => x !== null);
+  const fromModel: RankedResource[] = [];
+  for (const r of ranked) {
+    const c = byId.get(r.id);
+    if (c) fromModel.push({ ...c, priority: r.priority, whyRecommended: r.whyRecommended, forSkill: targetSkill(r.forSkill, skills) });
+  }
 
   // The model may rank only some of them; keep the rest rather than dropping.
-  const missing = candidates
+  const missing: RankedResource[] = candidates
     .filter((c) => !fromModel.some((r) => r.id === c.id))
     .map((c, i) => ({
       ...c,
       priority: fromModel.length + i + 1,
+      forSkill: skills[0],
       whyRecommended:
         c.source === "community"
           ? "Recommended by people working in this field."
@@ -175,11 +186,20 @@ async function rankResources(
     }));
 
   return {
-    resources: [...fromModel, ...missing].slice(0, max),
+    resources: [...fromModel, ...missing].slice(0, max).map((r): RankedResource => {
+      const myStatus = statusFor(ctx.resources, r.url);
+      return myStatus ? { ...r, myStatus } : r;
+    }),
     unsourced: false,
     research,
     reasons,
   };
+}
+
+/** The ranker's skill for a resource, if it's one of the targets; otherwise the first target. */
+function targetSkill(raw: unknown, skills: string[]): string | undefined {
+  const said = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return skills.find((s) => s.toLowerCase() === said) ?? skills[0];
 }
 
 export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
