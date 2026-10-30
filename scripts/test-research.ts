@@ -13,6 +13,7 @@ import { readdirSync, readFileSync } from "node:fs";
 
 import { skillLevel } from "../src/context/assemble.js";
 import { nextLevel, normalizeSkillCategory } from "../src/context/persist.js";
+import { savedKey } from "../src/context/saved-results.js";
 import { FUNCTIONS_USED, TABLES_USED } from "../src/schema-used.js";
 
 import {
@@ -829,6 +830,15 @@ check("retries, ownership and framework reach the evaluator", () => {
   assert.match(sc.system, /Never invent/);
   assert.match(sc.system, /under 250 words/);
   assert.match(sc.user, /no stories saved yet/);
+});
+
+check("a saved result is filed under the job as the site will look it up", () => {
+  assert.equal(savedKey("  Registered   Nurse "), "registered nurse");
+  assert.equal(savedKey("Registered Nurse"), savedKey("registered nurse"));
+  assert.equal(savedKey(""), null);
+  assert.equal(savedKey("   "), null);
+  assert.equal(savedKey(undefined), null);
+  assert.equal(savedKey("x".repeat(300))!.length, 200);
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

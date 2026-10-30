@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { FieldResearch } from "../adapters/research/index.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { resolveFieldProfile } from "../context/field-profile.js";
+import { saveResult } from "../context/saved-results.js";
 import { rankResourcesPrompt, studyPlanPrompt, suggestResourcesPrompt } from "../domain/prompts.js";
 import { drillDifficulty, nextReviewInDays, pickDrillSkill } from "../domain/spaced-repetition.js";
 import { deriveSkillTargets } from "../domain/targets.js";
@@ -368,24 +369,13 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
         },
       };
 
-      let recommendationId: string | null = null;
-      try {
-        const { data } = await auth.db
-          .from("ai_recommendations")
-          .insert({
-            user_id: auth.userId,
-            recommendation_type: "pathway",
-            title: `Learning pathway: ${derived.targets.map((t) => t.skill).slice(0, 3).join(", ")}`,
-            description: `${weeks}w · ${hoursPerWeek} h/week · ${field}`,
-            ai_reasoning: JSON.stringify(pathway).slice(0, 8000),
-            status: "active",
-          })
-          .select("id")
-          .single();
-        recommendationId = data?.id ?? null;
-      } catch {
-        /* best-effort */
-      }
+      const recommendationId = await saveResult(auth.db, auth.userId, {
+        type: "pathway",
+        title: `Learning pathway: ${derived.targets.map((t) => t.skill).slice(0, 3).join(", ")}`,
+        description: `${weeks}w · ${hoursPerWeek} h/week · ${field}`,
+        subject: args.field ?? field,
+        payload: { pathway },
+      });
 
       return ok({
         pathway,

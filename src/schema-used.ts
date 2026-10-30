@@ -13,7 +13,9 @@
 export const TABLES_USED: Record<string, readonly string[]> = {
   ai_recommendations: [
     "id", "user_id", "recommendation_type", "title", "description", "ai_reasoning",
-    "confidence_score", "status", "created_at",
+    "confidence_score", "status", "created_at", "expires_at",
+    // CareerCraft migration 20261031000000_coach_saved_results_and_resource_links.sql.
+    "payload", "subject", "level",
   ],
   interview_answers: [
     "id", "session_id", "user_id", "question_id", "question_text", "question_type", "answer_text",
@@ -51,7 +53,12 @@ export const TABLES_USED: Record<string, readonly string[]> = {
     "weakest_question_type", "updated_at",
   ],
   user_preferences: ["user_id", "job_role_type", "interview_types", "updated_at"],
-  user_resources: ["user_id", "resource_id", "status", "progress_percent"],
+  user_resources: [
+    "user_id", "resource_id", "status", "progress_percent", "user_rating", "notes", "started_at",
+    "completed_at",
+    // CareerCraft migration 20261031000000_coach_saved_results_and_resource_links.sql.
+    "url", "title", "provider", "skill",
+  ],
   user_skills: [
     "user_id", "skill_id", "proficiency", "proficiency_level", "trend", "times_tested",
     "last_tested_at", "category", "updated_at",

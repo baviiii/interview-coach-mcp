@@ -4,6 +4,7 @@ import type { FieldResearch } from "../adapters/research/index.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { resolveFieldProfile } from "../context/field-profile.js";
 import { persistSkillSignals } from "../context/persist.js";
+import { saveResult } from "../context/saved-results.js";
 import {
   buildCredentialCandidates,
   CERT_CATALOG,
@@ -111,24 +112,14 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         userToken: auth.jwt,
       });
 
-      let recommendationId: string | null = null;
-      try {
-        const { data } = await auth.db
-          .from("ai_recommendations")
-          .insert({
-            user_id: auth.userId,
-            recommendation_type: "career_guidance",
-            title: `Career guidance: ${args.targetRole ?? ctx.goal?.targetRole ?? ctx.targetField ?? "general"}`,
-            description: args.question ?? null,
-            ai_reasoning: JSON.stringify(res.data).slice(0, 8000),
-            status: "active",
-          })
-          .select("id")
-          .single();
-        recommendationId = data?.id ?? null;
-      } catch {
-        /* best-effort persistence */
-      }
+      const subject = args.targetRole ?? args.targetField ?? ctx.goal?.targetRole ?? ctx.targetField;
+      const recommendationId = await saveResult(auth.db, auth.userId, {
+        type: "career_guidance",
+        title: `Career guidance: ${subject ?? "general"}`,
+        description: args.question ?? null,
+        subject,
+        payload: { guidance: res.data },
+      });
 
       return ok({ guidance: res.data, recommendationId, _meta: { model: res.model, research: researchMeta(research) } });
     },
@@ -183,7 +174,15 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         userToken: auth.jwt,
       });
 
-      return ok({ facts, analysis: res.data, _meta: { model: res.model, research: researchMeta(research) } });
+      const subject = args.targetField ?? args.targetRole ?? ctx.goal?.targetField ?? ctx.targetField;
+      const recommendationId = await saveResult(auth.db, auth.userId, {
+        type: "certification_analysis",
+        title: `Certification review: ${subject ?? "your portfolio"}`,
+        subject,
+        payload: { facts, analysis: res.data },
+      });
+
+      return ok({ facts, analysis: res.data, recommendationId, _meta: { model: res.model, research: researchMeta(research) } });
     },
   );
 
@@ -248,24 +247,14 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         /* grounding best-effort */
       }
 
-      let recommendationId: string | null = null;
-      try {
-        const { data } = await auth.db
-          .from("ai_recommendations")
-          .insert({
-            user_id: auth.userId,
-            recommendation_type: "certification",
-            title: `Next certifications for ${args.targetField ?? ctx.goal?.targetField ?? "your goal"}`,
-            description: null,
-            ai_reasoning: JSON.stringify(res.data).slice(0, 8000),
-            status: "active",
-          })
-          .select("id")
-          .single();
-        recommendationId = data?.id ?? null;
-      } catch {
-        /* best-effort */
-      }
+      const subject = args.targetField ?? ctx.goal?.targetField ?? ctx.targetField;
+      const recommendationId = await saveResult(auth.db, auth.userId, {
+        type: "certification",
+        title: `Next certifications for ${subject ?? "your goal"}`,
+        subject,
+        level: args.seniority,
+        payload: { plan: res.data, topPickProof: proof },
+      });
 
       return ok({
         plan: res.data,
@@ -544,24 +533,13 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         userToken: auth.jwt,
       });
 
-      let recommendationId: string | null = null;
-      try {
-        const { data } = await auth.db
-          .from("ai_recommendations")
-          .insert({
-            user_id: auth.userId,
-            recommendation_type: "roadmap",
-            title: `Roadmap: ${targetRole} (${skeleton.horizonWeeks}w)`,
-            description: `${skeleton.hoursPerWeek} h/week · ${skeleton.intensity}`,
-            ai_reasoning: JSON.stringify(res.data).slice(0, 8000),
-            status: "active",
-          })
-          .select("id")
-          .single();
-        recommendationId = data?.id ?? null;
-      } catch {
-        /* best-effort */
-      }
+      const recommendationId = await saveResult(auth.db, auth.userId, {
+        type: "roadmap",
+        title: `Roadmap: ${targetRole} (${skeleton.horizonWeeks}w)`,
+        description: `${skeleton.hoursPerWeek} h/week · ${skeleton.intensity}`,
+        subject: targetRole,
+        payload: { roadmap: res.data, skeleton },
+      });
 
       return ok({
         roadmap: res.data,

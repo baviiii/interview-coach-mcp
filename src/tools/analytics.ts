@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { assembleLearnerContext } from "../context/assemble.js";
+import { newestSessionId, saveResult } from "../context/saved-results.js";
 import { parseRoundType, ROUND_LABELS, ROUND_TYPES } from "../domain/interview-loop.js";
 import type { AuthContext } from "../server/auth.js";
 import * as S from "../schemas.js";
@@ -169,15 +170,27 @@ SKILLS NEEDING WORK: ${ctx.weakSkills.map((s) => s.name).join(", ") || "none yet
 ${mix ? `\n${mix}\nRound types: Phone screen = a recruiter's first call; Behavioural = past-situation (STAR) questions; Technical = the work itself; Full interview = a mixed final round. If they've skipped a type that their next real interview will include, say so and make practising it one of the weekly goals.\n` : ""}
 Do not invent metrics that aren't supported by the data above.`;
 
-      const res = await horus.infer({
-        task: "analytics.weekly_insight",
-        system,
-        messages: [{ role: "user", content: user }],
-        model: "fast",
-        userRef: auth.userId,
-        userToken: auth.jwt,
+      const [res, basedOn] = await Promise.all([
+        horus.infer({
+          task: "analytics.weekly_insight",
+          system,
+          messages: [{ role: "user", content: user }],
+          model: "fast",
+          userRef: auth.userId,
+          userToken: auth.jwt,
+        }),
+        newestSessionId(auth.db, auth.userId),
+      ]);
+      // Saved with the session it was written after: the site shows this note
+      // until a newer session exists, instead of asking again on every visit.
+      const insight = { ...(res.data as object), basedOn };
+      await saveResult(auth.db, auth.userId, {
+        type: "weekly_insight",
+        title: "Weekly practice note",
+        subject: args.field ?? ctx.targetField,
+        payload: insight,
       });
-      return ok({ ...(res.data as object), _meta: { model: res.model } });
+      return ok({ ...insight, _meta: { model: res.model } });
     },
   );
 }
