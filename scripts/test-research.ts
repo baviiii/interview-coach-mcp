@@ -70,6 +70,7 @@ import { canonicalField, resolveFieldProfile } from "../src/context/field-profil
 import { deriveSkillTargets } from "../src/domain/targets.js";
 import { withMarket, type InferRequest, type ModelProvider } from "../src/adapters/horus/index.js";
 import { MAX_ATTEMPTS, retryDelay } from "../src/adapters/horus/http-client.js";
+import { searchUrl } from "../src/tools/proof.js";
 import { emptyResearch, type ResearchSnippet } from "../src/adapters/research/port.js";
 import { bucketSnippets } from "../src/adapters/research/util.js";
 import { titleFitsField } from "../src/adapters/research/wikipedia-client.js";
@@ -995,6 +996,14 @@ check("a call is retried only when no worker started for it (BOOT_ERROR), and at
   assert.equal(retryDelay(502, boot, 1), null);
   assert.equal(retryDelay(546, '{"code":"WORKER_LIMIT"}', 1), null);
   assert.equal(retryDelay(429, '{"error":"Usage limit reached"}', 1), null);
+});
+
+check("a coach-suggested resource links to a search for it, never an invented page", () => {
+  const url = searchUrl("Australian Medicines Handbook", "Registered Nurse");
+  assert.ok(url.startsWith("https://duckduckgo.com/?q="));
+  assert.equal(decodeURIComponent(url.split("q=")[1]!), "Australian Medicines Handbook Registered Nurse Australia");
+  assert.equal(searchUrl("Australian Medicines Handbook", "Registered Nurse"), url, "same title and job, same link (so it can be tracked)");
+  assert.equal(decodeURIComponent(searchUrl("NMBA standards", null).split("q=")[1]!), "NMBA standards Australia");
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

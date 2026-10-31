@@ -1,9 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { ResearchSnippet } from "../adapters/research/port.js";
+import { config } from "../config.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { resolveFieldProfile } from "../context/field-profile.js";
 import { finishedUrls, normaliseUrl, statusFor } from "../context/resources.js";
+import { suggestResourcesPrompt } from "../domain/prompts.js";
 import * as S from "../schemas.js";
 import { groundingFits, ok, proofFromSnippet, researchMeta, researchSafely } from "./_util.js";
 import type { ToolDeps } from "./interview.js";
@@ -152,12 +154,65 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
           return myStatus ? { ...r, myStatus } : r;
         });
 
+      // Nothing real found for this job. Common outside tech: Reddit's API is
+      // closed to new apps, and Hacker News only fits software. Rather than an
+      // empty page, the coach names what a practitioner would, from its own
+      // knowledge, labelled as such (unsourced) and with no invented links:
+      // each one's link is a web search for it.
+      let suggested: SuggestedResource[] = [];
+      if (merged.length === 0) {
+        try {
+          const { system, user } = suggestResourcesPrompt({
+            field: field ?? skills[0] ?? "their field",
+            skills,
+            goal: args.goal,
+            count: Math.min(max, 6),
+            ctx,
+          });
+          const res = await horus.infer<{
+            resources?: Array<{ title?: string; type?: string; whyRecommended?: string; howToFind?: string }>;
+          }>({
+            task: "study.suggest_resources",
+            system,
+            messages: [{ role: "user", content: user }],
+            model: "fast",
+            userRef: auth.userId,
+            userToken: auth.jwt,
+          });
+          suggested = (Array.isArray(res.data.resources) ? res.data.resources : [])
+            .filter((r) => typeof r.title === "string" && r.title.trim())
+            .map((r) => {
+              const url = searchUrl(r.title!.trim(), field);
+              const myStatus = statusFor(ctx.resources, url);
+              return {
+                title: r.title!.trim(),
+                provider: r.howToFind?.trim() || "Suggested by the coach",
+                type: r.type ?? "reading",
+                url,
+                why: r.whyRecommended ?? "",
+                proof: null,
+                unsourced: true as const,
+                ...(myStatus ? { myStatus } : {}),
+              };
+            })
+            .filter((r) => !done.has(normaliseUrl(r.url)!))
+            .slice(0, max);
+        } catch {
+          /* best-effort — an empty list is still an honest answer */
+        }
+      }
+
       return ok({
         query,
         skills,
         field: field ?? null,
-        resources: merged,
-        _meta: { research: researchMeta(research), techSourcesSkipped: !searchable },
+        resources: merged.length ? merged : suggested,
+        _meta: {
+          research: researchMeta(research),
+          techSourcesSkipped: !searchable,
+          // True when nothing real was found and these are the coach's own suggestions.
+          unsourced: merged.length === 0 && suggested.length > 0,
+        },
       });
     },
   );
@@ -168,4 +223,28 @@ function numberedSignals(signals: ResearchSnippet[]): string {
   if (signals.length === 0) return "";
   const lines = signals.map((s, i) => `${i + 1}. ${s.text} [${s.sourceLabel}${s.stat ? `, ${s.stat}` : ""}]`);
   return `\n\nREAL-WORLD SIGNALS — real posts and pages from people in this field. Counter these, and never invent a source:\n${lines.join("\n")}\n`;
+}
+
+/** A resource the coach suggested from its own knowledge, when no real source was found. */
+interface SuggestedResource {
+  title: string;
+  /** How to find it, in the coach's words. */
+  provider: string;
+  type: string;
+  /** A web search for it: the coach never invents a link. */
+  url: string;
+  why: string;
+  proof: null;
+  unsourced: true;
+  myStatus?: string;
+}
+
+/**
+ * A web search for a suggested resource, scoped to the job and the market, so
+ * "Australian Medicines Handbook" finds the real thing in one click. Stable for
+ * the same title and job, so it can be saved and marked done like any link.
+ */
+export function searchUrl(title: string, field?: string | null): string {
+  const q = [title, field, config.market].filter(Boolean).join(" ");
+  return `https://duckduckgo.com/?q=${encodeURIComponent(q)}`;
 }
