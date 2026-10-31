@@ -281,7 +281,7 @@ This is what **really** talks to the outside world today — not what's on a roa
 |--------|-------|------|----------|
 | **Supabase** | ✅ Yes (prod) | Auth + all learner data | URL + anon key |
 | **AI gateway** (`HORUS_MODE=gateway`) | ✅ Yes | All LLM generation (e.g. Gemini via Lovable gateway) | `MODEL_GATEWAY_KEY` |
-| **Hacker News** (`hn.algolia.com`) | ✅ Yes | **Research** (questions/resources, any field) + proof links — **technical jobs only** (field profile `technicalWeight` ≥ 0.6); for other jobs its links are skipped and tips cite the researched post they answer | No |
+| **Hacker News** (`hn.algolia.com`) | ✅ Yes | **Research** (questions/resources, any field) + proof links — **software and IT jobs only** (the field profile's interview formats include `coding` or `system_design`; a nurse's interviews are technical but clinical); for other jobs its links are skipped and tips cite the researched post they answer | No |
 | **Wikipedia** (Action API) | ✅ Yes | **Research** — role facts + the credentials/licenses a field expects | No |
 | **Reddit** (`reddit.com`) | ✅ Yes | **Research** ("users who had issues") + proof. Anonymous often 403s → set free `REDDIT_CLIENT_ID/SECRET` for app-only OAuth | No (free creds recommended) |
 | **Horus RAG** (`ragSearch`) | ✅ When provided | **Now called by research** (`HorusRagResearchSource`) — your curated corpus, if the provider implements `ragSearch` | Horus |
@@ -332,7 +332,7 @@ cp .env.example .env
 | `HORUS_MODE=mock` | Fake AI — dev only |
 | `HORUS_MODE=gateway` | Real LLM via OpenAI-compatible API |
 | `HORUS_MODE=http` | Horus for RAG/graph; generation needs `/infer` (not shipped) or use gateway |
-| `GROUNDING_MODE=hn` | Real Hacker News proof links (used for technical jobs only) |
+| `GROUNDING_MODE=hn` | Real Hacker News proof links (used for software and IT jobs only) |
 | `GROUNDING_MODE=reddit` | Real Reddit proof links |
 | `GROUNDING_MODE=mock` | Fake proof sources |
 | `MARKET=Australia` | The country learners are job-hunting in (default `Australia`). Every model call is told to use its regulators, licensing, qualification framework, spelling and currency, and to flag state/territory differences; licence, course and role-fact research is scoped to it first |

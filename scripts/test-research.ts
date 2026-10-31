@@ -934,13 +934,14 @@ check("finishing a resource credits its skill once, and only when the save lande
   assert.equal(creditsSkill(null, "in_progress", true), false);
 });
 
-check("tech-only proof links are used for technical jobs only", () => {
+check("tech-only proof links are used for software and IT jobs only", () => {
   const hn = { techOnly: true, findEvidence: async () => null, findResources: async () => [] };
   const any = { findEvidence: async () => null, findResources: async () => [] };
-  assert.equal(groundingFits(hn, { technicalWeight: 0.85 }), true, "software engineer");
-  assert.equal(groundingFits(hn, { technicalWeight: 0.3 }), false, "registered nurse");
-  assert.equal(groundingFits(hn, neutralProfile("Unknown job")), false, "an unknown job isn't assumed technical");
-  assert.equal(groundingFits(any, { technicalWeight: 0.1 }), true, "a general source fits every job");
+  assert.equal(groundingFits(hn, { domainFormats: ["coding", "system_design"] }), true, "software engineer");
+  // Nursing interviews are highly technical, but clinical: Hacker News has nothing on them.
+  assert.equal(groundingFits(hn, { domainFormats: ["practical", "case_study", "technical"] }), false, "registered nurse");
+  assert.equal(groundingFits(hn, neutralProfile("Unknown job")), false, "an unknown job isn't assumed to be in tech");
+  assert.equal(groundingFits(any, { domainFormats: ["practical"] }), true, "a general source fits every job");
   const proof = proofFromSnippet({ kind: "experience", text: "t", sourceUrl: "https://www.reddit.com/r/nursing/x", sourceLabel: "r/nursing" });
   assert.equal(proof.kind, "reddit");
   assert.equal(proof.url, "https://www.reddit.com/r/nursing/x");

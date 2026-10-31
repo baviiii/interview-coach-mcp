@@ -65,17 +65,22 @@ export function clampScore(v: unknown): number | null {
   return Math.max(0, Math.min(99.99, n));
 }
 
-/** A field profile at or above this is technical enough for a tech-only proof source. */
-export const TECH_PROOF_MIN_WEIGHT = 0.6;
+/** Interview formats only software and IT jobs use: the jobs a tech community's links fit. */
+const TECH_INDUSTRY_FORMATS: ReadonlySet<string> = new Set(["coding", "system_design"]);
 
 /**
  * Whether this proof source's links fit the field. A tech-only source (Hacker
- * News) is used only for technical fields: under a nurse's or a chef's tip its
- * links are off-topic, and no link (the tip says "unverified") beats a wrong
- * one. A field whose profile couldn't be worked out counts as not technical.
+ * News) is used only for software and IT jobs: under a nurse's or a chef's tip
+ * its links are off-topic, and no link (the tip says "unverified") beats a
+ * wrong one.
+ *
+ * The test is the job's interview formats, not how technical its interviews
+ * are: a nurse's interviews are highly technical (the live model rates them
+ * so) but clinical, and Hacker News has nothing on them. A field whose profile
+ * couldn't be worked out has neutral formats, so it doesn't qualify.
  */
-export function groundingFits(grounding: GroundingPort, profile: Pick<FieldProfile, "technicalWeight">): boolean {
-  return !grounding.techOnly || profile.technicalWeight >= TECH_PROOF_MIN_WEIGHT;
+export function groundingFits(grounding: GroundingPort, profile: Pick<FieldProfile, "domainFormats">): boolean {
+  return !grounding.techOnly || profile.domainFormats.some((f) => TECH_INDUSTRY_FORMATS.has(f));
 }
 
 /** A research snippet as a proof chip: the real post or page it came from. */
