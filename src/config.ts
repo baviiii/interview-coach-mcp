@@ -30,6 +30,9 @@ export const config = {
     baseUrl: opt("HORUS_BASE_URL"),
     apiKey: opt("HORUS_API_KEY"),
     ragUrl: opt("HORUS_RAG_URL"),
+    // The knowledge index research searches: CareerCraft's horus-rag function.
+    // Defaults to {base}/horus-rag, next to /infer on the same functions URL.
+    knowledgeUrl: opt("HORUS_KNOWLEDGE_URL"),
     graphUrl: opt("HORUS_GRAPH_URL"),
     // Spoken answers. Defaults to {base}/voice-session, CareerCraft's
     // voice-session function (the base is its functions URL, as for /infer).

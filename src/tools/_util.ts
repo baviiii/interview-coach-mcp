@@ -83,10 +83,15 @@ export function groundingFits(grounding: GroundingPort, profile: Pick<FieldProfi
   return !grounding.techOnly || profile.domainFormats.some((f) => TECH_INDUSTRY_FORMATS.has(f));
 }
 
-/** A research snippet as a proof chip: the real post or page it came from. */
+/** A research snippet as a proof chip: the real post, page or guide it came from. */
 export function proofFromSnippet(s: ResearchSnippet): ProofSource {
   return {
-    kind: s.sourceLabel.startsWith("r/") || /reddit\.com/.test(s.sourceUrl) ? "reddit" : "community",
+    kind:
+      s.origin === "knowledge-index"
+        ? "resource"
+        : s.sourceLabel.startsWith("r/") || /reddit\.com/.test(s.sourceUrl)
+          ? "reddit"
+          : "community",
     label: s.sourceLabel,
     stat: s.stat ?? "Real post",
     url: s.sourceUrl,

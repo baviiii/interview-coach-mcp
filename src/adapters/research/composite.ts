@@ -35,7 +35,9 @@ export class CompositeResearch implements ResearchPort {
 
 function cacheKey(req: ResearchRequest): string {
   const intents = (req.intents ?? []).slice().sort().join(",");
-  return [req.field, req.role ?? "", req.seniority ?? "", req.market ?? "", intents, req.max ?? ""]
+  // Whether the knowledge index was asked for changes the result; the learner's
+  // token doesn't (the index isn't personal), so it stays out of the key.
+  return [req.field, req.role ?? "", req.seniority ?? "", req.market ?? "", intents, req.max ?? "", req.knowledgeIndex ? "kb" : ""]
     .map((p) => String(p).toLowerCase())
     .join("|");
 }

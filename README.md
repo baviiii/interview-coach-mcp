@@ -33,7 +33,7 @@ Your app or MCP client
         │
         │  research the field FIRST (any field, free + cited)
         ▼
-  ResearchPort   ──▶  Reddit · Hacker News · Wikipedia · your RAG
+  ResearchPort   ──▶  Knowledge index · Reddit · Hacker News · Wikipedia
         │
         │  generate / evaluate / plan / drill … (prompt now carries real signals)
         ▼
@@ -216,7 +216,7 @@ The thing that makes this work for **any** field. Before a tool generates, it as
 | **resources** | community-recommended review courses/books | Reddit, HN |
 | **facts** | what the role is + entry requirements | Wikipedia |
 
-**All free, no API key.** Modes (`RESEARCH_MODE`): `auto` (default — Reddit + HN + Wikipedia + your RAG), `reddit`, `mock` (offline), `off` (degrade to pre-research behavior).
+**All free, no API key.** Modes (`RESEARCH_MODE`): `auto` (default — Reddit + HN + Wikipedia, plus the knowledge index where a tool asks for it), `reddit`, `mock` (offline), `off` (degrade to pre-research behavior).
 
 Tools wired to research: `generate_contextual_questions`, `start_interview_session`, `next_question`, `finish_interview`, `build_interview_plan`, `get_proven_tips`, `find_proven_resources`, `rank_learning_resources`, `get_learning_pathway`, `recommend_certifications`, `analyze_certifications`, `career_guidance`, `build_career_roadmap`, `build_study_plan`. Each surfaces its real sources in `_meta.research`.
 
@@ -279,7 +279,7 @@ This is what **really** talks to the outside world today — not what's on a roa
 | **Hacker News** (`hn.algolia.com`) | ✅ Yes | **Research** (questions/resources, any field) + proof links — **software and IT jobs only** (the field profile's interview formats include `coding` or `system_design`; a nurse's interviews are technical but clinical); for other jobs its links are skipped and tips cite the researched post they answer | No |
 | **Wikipedia** (Action API) | ✅ Yes | **Research** — role facts + the credentials/licenses a field expects | No |
 | **Reddit** (`reddit.com`) | ⚠️ Mostly not | **Research** ("users who had issues") + proof. Anonymous is 403'd from datacenter IPs; app credentials need Reddit's manual approval now (see the Reddit caveat) | Approved app credentials |
-| **Horus RAG** (`ragSearch`) | ✅ When provided | **Now called by research** (`HorusRagResearchSource`) — your curated corpus, if the provider implements `ragSearch` | Horus |
+| **Knowledge index** (Horus, via CareerCraft's `horus-rag`) | ✅ Tips, resources, learning pathway | **Research** — Australian career documents: Jobs and Skills Australia reports, government and recruiter interview and selection-criteria guides, state career and skills material. Searched as the signed-in learner (op `careers-search`, retrieval only), so each search spends their plan's "Career intelligence search" allowance (Free: 20/month); one search per job, shared by all learners for 6 h. See `adapters/research/knowledge-index.ts` | The learner's login |
 | **Horus graph** (`graphQuery`) | ❌ Adapter only | Still not used by tools | Horus |
 | **HTTP grounding bridge** (`GROUNDING_MODE=http`) | ❌ You deploy it | Expected to front Reddit + web search + RAG — **not included in this repo** | Optional |
 | **Horus `/infer`** | ❌ Not on Horus yet | Use `gateway` for real generation instead | — |
@@ -331,7 +331,8 @@ cp .env.example .env
 | `GROUNDING_MODE=reddit` | Real Reddit proof links |
 | `GROUNDING_MODE=mock` | Fake proof sources |
 | `MARKET=Australia` | The country learners are job-hunting in (default `Australia`). Every model call is told to use its regulators, licensing, qualification framework, spelling and currency, and to flag state/territory differences; licence, course and role-fact research is scoped to it first |
-| `RESEARCH_MODE=auto` | **Live field research** (free): Reddit + HN + Wikipedia + your RAG — the default |
+| `RESEARCH_MODE=auto` | **Live field research** (free): Reddit + HN + Wikipedia, plus the knowledge index for tips, resources and the learning pathway — the default |
+| `HORUS_KNOWLEDGE_URL` | Where the knowledge index is searched. Defaults to `{HORUS_BASE_URL}/horus-rag`, CareerCraft's function next to `/infer` |
 | `RESEARCH_MODE=reddit` / `mock` / `off` | Reddit only / offline canned / disabled |
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Free Reddit app creds → reliable Reddit research (anonymous often 403s) |
 | `SUPABASE_URL` + `SUPABASE_ANON_KEY` | Real user data, RLS-scoped |
@@ -437,7 +438,7 @@ src/
 ├── adapters/
 │   ├── horus/             ← ModelProvider (mock / gateway / http)
 │   ├── grounding/         ← GroundingPort (mock / hn / reddit / http) — proof AFTER
-│   ├── research/          ← ResearchPort (reddit / hn / wikipedia / rag) — research BEFORE
+│   ├── research/          ← ResearchPort (knowledge index / reddit / hn / wikipedia) — research BEFORE
 │   └── supabase.ts        ← JWT → RLS client
 └── schemas.ts             ← Zod inputs for tools
 ```

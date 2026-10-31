@@ -71,6 +71,13 @@ import { deriveSkillTargets } from "../src/domain/targets.js";
 import { withMarket, type InferRequest, type ModelProvider } from "../src/adapters/horus/index.js";
 import { MAX_ATTEMPTS, retryDelay } from "../src/adapters/horus/http-client.js";
 import { searchUrl } from "../src/tools/proof.js";
+import {
+  KnowledgeIndexResearchSource,
+  knowledgeKind,
+  knowledgeQuery,
+  MIN_RELEVANCE,
+  toSnippets,
+} from "../src/adapters/research/knowledge-index.js";
 import { emptyResearch, type ResearchSnippet } from "../src/adapters/research/port.js";
 import { bucketSnippets } from "../src/adapters/research/util.js";
 import { titleFitsField } from "../src/adapters/research/wikipedia-client.js";
@@ -1004,6 +1011,81 @@ check("a coach-suggested resource links to a search for it, never an invented pa
   assert.equal(decodeURIComponent(url.split("q=")[1]!), "Australian Medicines Handbook Registered Nurse Australia");
   assert.equal(searchUrl("Australian Medicines Handbook", "Registered Nurse"), url, "same title and job, same link (so it can be tracked)");
   assert.equal(decodeURIComponent(searchUrl("NMBA standards", null).split("q=")[1]!), "NMBA standards Australia");
+});
+
+check("a knowledge-index search names only the job, so learners going for it share one", () => {
+  assert.equal(knowledgeQuery({ field: "Nursing", role: "Registered Nurse" }), knowledgeQuery({ field: "Health", role: "Registered Nurse" }));
+  assert.match(knowledgeQuery({ field: "Electrician" }), /^Electrician: job interview preparation/);
+  // The same documents fill whichever bucket the tool asked for.
+  assert.equal(knowledgeKind(["resource"]), "resource");
+  assert.equal(knowledgeKind(["experience", "question"]), "experience");
+  assert.equal(knowledgeKind(["resource", "experience"]), "resource");
+  assert.equal(knowledgeKind(undefined), "resource");
+});
+
+check("knowledge-index documents become one snippet each, faint matches dropped", () => {
+  const snippets = toSnippets(
+    [
+      { title: "Preparing for an Interview (AHRC)", content: "Research the organisation…", url: "https://humanrights.gov.au/x.pdf", score: 82 },
+      { title: "Preparing for an Interview (AHRC)", content: "Another passage", url: "https://humanrights.gov.au/x.pdf", score: 60 },
+      { title: "Australian Jobs 2025", content: "Registered nurses are in demand…", url: "https://jsa.gov.au/aj.pdf", score: 41 },
+      { title: "Faint", content: "barely related", url: "https://example.gov.au/f.pdf", score: MIN_RELEVANCE - 1 },
+      { title: "No link", content: "text", score: 90 },
+    ],
+    "resource",
+  );
+  assert.deepEqual(snippets.map((s) => s.sourceLabel), ["Preparing for an Interview (AHRC)", "Australian Jobs 2025"]);
+  assert.equal(snippets[0]!.text, "Research the organisation…", "the best passage stands for its document");
+  assert.ok(snippets.every((s) => s.kind === "resource" && s.origin === "knowledge-index" && s.stat === "Knowledge base"));
+});
+
+await checkAsync("the knowledge index runs only when asked, as the learner, once per job, and never breaks research", async () => {
+  const calls: Array<{ auth: string | null; body: { op?: string; query?: string } }> = [];
+  let status = 200;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    calls.push({ auth: new Headers(init.headers).get("authorization"), body: JSON.parse(String(init.body)) });
+    if (status !== 200) return new Response('{"error":"Usage limit reached"}', { status });
+    return new Response(
+      JSON.stringify({ answer: "", sources: [{ title: "Interview Preparation Guide", content: "Use the STAR method…", url: "https://kb.test/ipg.pdf", score: 70 }] }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  try {
+    const source = new KnowledgeIndexResearchSource({ url: "https://kb.test/horus-rag" });
+    const nurse = { field: "Registered Nurse", intents: ["resource" as const], knowledgeIndex: true, userToken: "learner-jwt" };
+
+    assert.deepEqual(await source.gather({ ...nurse, knowledgeIndex: false }), [], "not asked for");
+    assert.deepEqual(await source.gather({ ...nurse, userToken: undefined }), [], "no signed-in learner");
+    assert.equal(calls.length, 0, "neither of those searched");
+
+    const first = await source.gather(nurse);
+    assert.equal(first[0]?.sourceLabel, "Interview Preparation Guide");
+    assert.equal(calls[0]!.auth, "Bearer learner-jwt", "searches as the learner");
+    assert.equal(calls[0]!.body.op, "careers-search");
+    const tips = await source.gather({ ...nurse, intents: ["experience", "question"] });
+    assert.equal(tips[0]?.kind, "experience", "tips get the same documents as signals");
+    assert.equal(calls.length, 1, "tips and resources for one job are one search");
+
+    status = 429;
+    assert.deepEqual(await source.gather({ ...nurse, field: "Electrician" }), [], "a spent allowance is nothing found");
+    status = 200;
+    await source.gather({ ...nurse, field: "Electrician" });
+    assert.equal(calls.length, 3, "a failed search isn't remembered, so the next one tries again");
+
+    // A 200 carrying `error` is a fault horus-rag handled, not an empty answer.
+    globalThis.fetch = (async () => new Response('{"error":"Horus unavailable"}', { status: 200 })) as unknown as typeof fetch;
+    assert.deepEqual(await source.gather({ ...nurse, field: "Chef" }), []);
+    let retried = false;
+    globalThis.fetch = (async () => {
+      retried = true;
+      return new Response('{"sources":[]}', { status: 200 });
+    }) as unknown as typeof fetch;
+    await source.gather({ ...nurse, field: "Chef" });
+    assert.ok(retried, "a handled fault isn't remembered as 'nothing found'");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

@@ -100,6 +100,9 @@ async function rankResources(
     role: ctx.goal?.targetRole,
     intents: ["resource"],
     max: Math.max(max, 6),
+    // Australian career documents, searched as the learner (one search per job, shared).
+    knowledgeIndex: true,
+    userToken: auth.jwt,
   });
   const community: Candidate[] = research.resources.map((s, i) => ({
     id: `research:${i + 1}`,
@@ -295,6 +298,9 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
           role: ctx.goal?.targetRole,
           intents: ["resource", "experience"],
           max: 4,
+          // Australian career documents, searched as the learner (one search per job, shared).
+          knowledgeIndex: true,
+          userToken: auth.jwt,
         }),
         // The real field only — never the "their field" placeholder.
         resolveFieldProfile(horus, args.field ?? ctx.goal?.targetField ?? ctx.targetField ?? ctx.job?.title, {

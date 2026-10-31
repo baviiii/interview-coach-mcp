@@ -42,6 +42,9 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
           role: ctx.goal?.targetRole,
           intents: ["experience", "question"],
           max: 4,
+          // Australian career documents, searched as the learner (one search per job, shared).
+          knowledgeIndex: true,
+          userToken: auth.jwt,
         }),
         resolveFieldProfile(horus, field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
@@ -116,6 +119,9 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
           role: ctx.goal?.targetRole,
           intents: ["resource"],
           max,
+          // Australian career documents, searched as the learner (one search per job, shared).
+          knowledgeIndex: true,
+          userToken: auth.jwt,
         }),
         resolveFieldProfile(horus, field, { userRef: auth.userId, userToken: auth.jwt }),
       ]);
@@ -129,14 +135,27 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
           /* best-effort */
         }
       }
-      const researched: typeof resources = research.resources.map((s) => ({
-        title: s.text.length > 90 ? `${s.text.slice(0, 89)}…` : s.text,
-        provider: s.sourceLabel,
-        type: "Discussion",
-        url: s.sourceUrl,
-        why: "Community-recommended for this field.",
-        proof: { kind: "community", label: s.sourceLabel, stat: s.stat ?? "community pick", url: s.sourceUrl },
-      }));
+      const researched: typeof resources = research.resources.map((s) =>
+        s.origin === "knowledge-index"
+          ? {
+              // A document from the knowledge index: its title is the resource,
+              // and the passage that matched says what's in it for this job.
+              title: s.sourceLabel,
+              provider: "Career knowledge base",
+              type: "Guide",
+              url: s.sourceUrl,
+              why: s.text,
+              proof: { kind: "resource", label: s.sourceLabel, stat: s.stat ?? "Knowledge base", url: s.sourceUrl },
+            }
+          : {
+              title: s.text.length > 90 ? `${s.text.slice(0, 89)}…` : s.text,
+              provider: s.sourceLabel,
+              type: "Discussion",
+              url: s.sourceUrl,
+              why: "Community-recommended for this field.",
+              proof: { kind: "community", label: s.sourceLabel, stat: s.stat ?? "community pick", url: s.sourceUrl },
+            },
+      );
 
       // Finished links are never recommended again; saved or started ones say so.
       const done = finishedUrls(ctx.resources);
@@ -222,7 +241,7 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
 function numberedSignals(signals: ResearchSnippet[]): string {
   if (signals.length === 0) return "";
   const lines = signals.map((s, i) => `${i + 1}. ${s.text} [${s.sourceLabel}${s.stat ? `, ${s.stat}` : ""}]`);
-  return `\n\nREAL-WORLD SIGNALS — real posts and pages from people in this field. Counter these, and never invent a source:\n${lines.join("\n")}\n`;
+  return `\n\nREAL-WORLD SIGNALS — real posts, pages and career guides about this field. Build on these, and never invent a source:\n${lines.join("\n")}\n`;
 }
 
 /** A resource the coach suggested from its own knowledge, when no real source was found. */

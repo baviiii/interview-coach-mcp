@@ -13,7 +13,8 @@
  * so a tool either grounds on something real or honestly has nothing to add.
  *
  * Free implementations (no API key): Reddit + Hacker News + Wikipedia, plus the
- * caller's own Horus RAG corpus when the ModelProvider exposes `ragSearch`. A
+ * knowledge index (Horus's Australian career documents, searched as the
+ * learner when a tool asks for it; see knowledge-index.ts). A
  * paid web-search provider (Tavily/Exa) or an HTTP "research bridge" can drop in
  * behind this same interface later without touching any tool code.
  */
@@ -37,6 +38,8 @@ export interface ResearchSnippet {
   sourceLabel: string;
   /** Optional credibility signal, e.g. "1.2k upvotes", "340 pts". */
   stat?: string;
+  /** Set when it came from the knowledge index: a document, not a community post. */
+  origin?: "knowledge-index";
 }
 
 /** Everything we learned about a field in one bundle. Each list may be empty;
@@ -70,6 +73,12 @@ export interface ResearchRequest {
   /** Soft cap on snippets per bucket. Defaults to a small number to respect
    *  free-API rate limits. */
   max?: number;
+  /** Also search the knowledge index. Off unless a tool asks: each search
+   *  spends the learner's plan allowance (see knowledge-index.ts). */
+  knowledgeIndex?: boolean;
+  /** The learner's Supabase token. The knowledge index only answers a signed-in
+   *  learner, so without it that source sits out. */
+  userToken?: string;
 }
 
 export interface ResearchPort {
