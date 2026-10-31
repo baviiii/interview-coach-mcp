@@ -24,7 +24,8 @@ ENV NODE_ENV=production
 # request to this server; anywhere else (docker run, CI) it is an unused file.
 # Its settings (port, readiness path, response streaming) are env vars on the
 # function, in horus-platform's infrastructure/tofu/envs/aws-dev/mcp.tf.
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt/extensions/lambda-adapter
+# Vendored rather than pulled from public ECR: see vendor/aws-lambda-adapter.
+COPY --chmod=0755 vendor/aws-lambda-adapter/lambda-adapter /opt/extensions/lambda-adapter
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
