@@ -357,9 +357,6 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       inputSchema: S.submitAnswerInput,
     },
     async (args) => {
-      // Only needed for the proof link at the end (is a tech-only source on
-      // topic for this job?); resolved while the answer is being marked.
-      const profile = resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt });
       const [ctx, stored, transcript] = await Promise.all([
         assembleLearnerContext(auth.db, auth.userId, { field: args.field, seniority: args.seniority }),
         readSessionQuestions(auth.db, args.sessionId),
@@ -498,7 +495,14 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       try {
         const tips = (res.data as { coachingTips?: Array<{ tip?: string }> }).coachingTips;
         const top = Array.isArray(tips) ? tips[0]?.tip : undefined;
-        if (top && groundingFits(grounding, await profile)) {
+        // Only a tech-only source needs the job's profile, and only after the
+        // marking is done: resolving it alongside the evaluation put a second
+        // model call in flight at once, which is what CareerCraft's infer
+        // function can't start workers for (503 BOOT_ERROR).
+        const fits = async () =>
+          !grounding.techOnly ||
+          groundingFits(grounding, await resolveFieldProfile(horus, args.field, { userRef: auth.userId, userToken: auth.jwt }));
+        if (top && (await fits())) {
           proof = await grounding.findEvidence({ claim: top, skill: args.field });
         }
       } catch {

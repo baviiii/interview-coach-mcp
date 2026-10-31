@@ -69,6 +69,7 @@ import { latestPerQuestion, sameQuestion } from "../src/tools/interview.js";
 import { canonicalField, resolveFieldProfile } from "../src/context/field-profile.js";
 import { deriveSkillTargets } from "../src/domain/targets.js";
 import { withMarket, type InferRequest, type ModelProvider } from "../src/adapters/horus/index.js";
+import { MAX_ATTEMPTS, retryDelay } from "../src/adapters/horus/http-client.js";
 import { emptyResearch, type ResearchSnippet } from "../src/adapters/research/port.js";
 import { bucketSnippets } from "../src/adapters/research/util.js";
 import { titleFitsField } from "../src/adapters/research/wikipedia-client.js";
@@ -980,6 +981,20 @@ check("a drill with no ideal points falls back to the model's own score", () => 
   assert.equal(s.fellBack, true);
   assert.equal(s.final, 7.5);
   assert.equal(buildDrillScore(DRILL_ANSWER, [], [], null, "high").final, 0, "a non-number scores nothing");
+});
+
+check("a call is retried only when no worker started for it (BOOT_ERROR), and at most twice", () => {
+  const boot = '{"code":"BOOT_ERROR","message":"Function failed to start (please check logs)"}';
+  const first = retryDelay(503, boot, 1)!;
+  assert.ok(first >= 1000 && first < 1500, `first wait ${first}`);
+  const second = retryDelay(503, boot, 2)!;
+  assert.ok(second >= 3000 && second < 3500, `second wait ${second}`);
+  assert.equal(retryDelay(503, boot, MAX_ATTEMPTS), null, "gives up after the last attempt");
+  // Anything that may have run (and spent) is never sent twice.
+  assert.equal(retryDelay(503, '{"error":"not configured"}', 1), null);
+  assert.equal(retryDelay(502, boot, 1), null);
+  assert.equal(retryDelay(546, '{"code":"WORKER_LIMIT"}', 1), null);
+  assert.equal(retryDelay(429, '{"error":"Usage limit reached"}', 1), null);
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

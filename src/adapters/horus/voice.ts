@@ -16,6 +16,7 @@
 
 import { config } from "../../config.js";
 import { AppError } from "../../errors.js";
+import { retryDelay } from "./http-client.js";
 
 export interface VoiceSession {
   /** Short-lived key for this one session. */
@@ -38,27 +39,40 @@ export async function mintVoiceSession(opts: { userRef: string; userToken: strin
     throw new AppError("Spoken answers aren't available on this server.", 503);
   }
   let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        // This server's key says who is calling; the learner's token says for
-        // whom — the voice-session function requires both.
-        Authorization: `Bearer ${config.horus.apiKey}`,
-        "x-functions-key": config.horus.apiKey,
-        "x-user-token": opts.userToken,
-        "x-tenant": config.horus.tenant,
-      },
-      body: JSON.stringify({ purpose: "interview_answer", userRef: opts.userRef }),
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    throw new AppError("Couldn't reach the speech service.", 502);
+  let text = "";
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // This server's key says who is calling; the learner's token says for
+          // whom — the voice-session function requires both.
+          Authorization: `Bearer ${config.horus.apiKey}`,
+          "x-functions-key": config.horus.apiKey,
+          "x-user-token": opts.userToken,
+          "x-tenant": config.horus.tenant,
+        },
+        body: JSON.stringify({ purpose: "interview_answer", userRef: opts.userRef }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      throw new AppError("Couldn't reach the speech service.", 502);
+    }
+    if (res.ok) break;
+    text = await res.text().catch(() => "");
+    // The function had no worker to run on, so nothing was minted: try again.
+    const wait = retryDelay(res.status, text, attempt);
+    if (wait === null) break;
+    await new Promise((resolve) => setTimeout(resolve, wait));
   }
   if (!res.ok) {
-    // 503 means "not configured there" — say that, not "broken"; 429 is the
+    // A 503 is "not configured there" unless it's the platform saying no
+    // worker started — then the service is busy, not off. 429 is the
     // learner's own hourly limit.
+    if (res.status === 503 && /BOOT_ERROR/.test(text)) {
+      throw new AppError("The speech service is busy. Type this answer, or try again in a moment.", 503);
+    }
     if (res.status === 503) throw new AppError("Spoken answers aren't switched on yet.", 503);
     if (res.status === 429) throw new AppError("You've started a lot of spoken answers this hour. Type this one, or try again later.", 429);
     console.warn(`[voice] mint failed: HTTP ${res.status}`);
