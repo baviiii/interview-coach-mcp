@@ -1,9 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+import type { ResearchSnippet } from "../adapters/research/port.js";
 import { assembleLearnerContext } from "../context/assemble.js";
-import { realWorldBlock } from "../domain/prompts.js";
+import { resolveFieldProfile } from "../context/field-profile.js";
+import { finishedUrls, normaliseUrl, statusFor } from "../context/resources.js";
 import * as S from "../schemas.js";
-import { ok, researchMeta, researchSafely } from "./_util.js";
+import { groundingFits, ok, proofFromSnippet, researchMeta, researchSafely } from "./_util.js";
 import type { ToolDeps } from "./interview.js";
 
 /**
@@ -24,23 +26,30 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: S.provenTipsInput,
     },
     async (args) => {
-      const ctx = await assembleLearnerContext(auth.db, auth.userId, {});
-      const focus = args.skill ?? ctx.weakSkills[0]?.name ?? "interview performance";
+      const ctx = await assembleLearnerContext(auth.db, auth.userId, { field: args.field });
+      // The job, not the skill: research on "Behavioural" finds nothing about nursing.
+      const field = args.field ?? ctx.goal?.targetField ?? ctx.targetField;
+      const focus = args.skill ?? ctx.weakSkills[0]?.name ?? field ?? "interview performance";
       const count = args.count ?? 3;
 
       // Research the real mistakes/pain points people report, so tips fix what
       // actually trips candidates up in this area rather than generic advice.
-      const research = await researchSafely(deps.research, {
-        field: args.skill ?? ctx.goal?.targetField ?? focus,
-        role: ctx.goal?.targetRole,
-        intents: ["experience", "question"],
-        max: 4,
-      });
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field: field ?? focus,
+          role: ctx.goal?.targetRole,
+          intents: ["experience", "question"],
+          max: 4,
+        }),
+        resolveFieldProfile(horus, field, { userRef: auth.userId, userToken: auth.jwt }),
+      ]);
+      // Each tip says which real post it answers, and that post is its proof.
+      const signals = [...research.experiences, ...research.questions].slice(0, 8);
 
-      const system = `You are an elite interview coach. Draft ${count} sharp, specific, NON-generic tips for the focus area. If real-world signals are provided, each tip should counter a specific mistake or pain point people actually report there. Each tip is one actionable sentence. Return ONLY JSON: { "tips": string[] }.`;
-      const user = `FOCUS: ${focus}\n${args.question ? `QUESTION: ${args.question}\n` : ""}Avoid platitudes — give tactics an experienced interviewer would respect.${realWorldBlock(research, { only: ["experience", "question"] })}`;
+      const system = `You are an elite interview coach. Draft ${count} sharp, specific, NON-generic tips for the focus area, for someone going for this job. If real-world signals are listed, each tip should counter a specific mistake or pain point people actually report there, and "basedOn" is that signal's number; otherwise "basedOn" is null. Each tip is one actionable sentence. Return ONLY JSON: { "tips": [{ "tip": string, "basedOn": number | null }] }.`;
+      const user = `JOB: ${field ?? "not given"}\nFOCUS: ${focus}\n${args.question ? `QUESTION: ${args.question}\n` : ""}Avoid platitudes — give tactics an experienced interviewer would respect.${numberedSignals(signals)}`;
 
-      const draft = await horus.infer<{ tips?: string[] }>({
+      const draft = await horus.infer<{ tips?: unknown[] }>({
         task: "proof.draft_tips",
         system,
         messages: [{ role: "user", content: user }],
@@ -49,20 +58,35 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
         userToken: auth.jwt,
       });
 
-      const tips = Array.isArray(draft.data.tips) ? draft.data.tips.slice(0, count) : [];
+      const tips = (Array.isArray(draft.data.tips) ? draft.data.tips : [])
+        .map((t) =>
+          typeof t === "string"
+            ? { tip: t, basedOn: null as unknown }
+            : { tip: String((t as { tip?: unknown })?.tip ?? "").trim(), basedOn: (t as { basedOn?: unknown })?.basedOn },
+        )
+        .filter((t) => t.tip)
+        .slice(0, count);
+      const searchable = groundingFits(grounding, profile);
       const grounded = await Promise.all(
-        tips.map(async (tip) => {
-          let proof = null;
-          try {
-            proof = await grounding.findEvidence({ claim: tip, skill: focus });
-          } catch {
-            /* grounding best-effort — unverified tips are still returned, labeled */
+        tips.map(async ({ tip, basedOn }) => {
+          const signal = typeof basedOn === "number" ? signals[basedOn - 1] : undefined;
+          let proof = signal ? proofFromSnippet(signal) : null;
+          if (!proof && searchable) {
+            try {
+              proof = await grounding.findEvidence({ claim: tip, skill: focus });
+            } catch {
+              /* grounding best-effort — unverified tips are still returned, labeled */
+            }
           }
           return { tip, proof, verified: proof !== null };
         }),
       );
 
-      return ok({ focus, tips: grounded, _meta: { model: draft.model, research: researchMeta(research) } });
+      return ok({
+        focus,
+        tips: grounded,
+        _meta: { model: draft.model, research: researchMeta(research), techSourcesSkipped: !searchable },
+      });
     },
   );
 
@@ -76,25 +100,33 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: S.provenResourcesInput,
     },
     async (args) => {
-      const ctx = await assembleLearnerContext(auth.db, auth.userId, {});
+      const ctx = await assembleLearnerContext(auth.db, auth.userId, { field: args.field });
+      const field = args.field ?? ctx.goal?.targetField ?? ctx.targetField;
       const skills = args.skills ?? ctx.weakSkills.map((s) => s.name);
-      const query = args.goal ?? `interview prep resources for ${skills[0] ?? "your target role"}`;
+      const query = args.goal ?? `interview prep resources for ${skills[0] ?? field ?? "your target role"}`;
       const max = args.maxResults ?? 6;
 
-      let resources: Awaited<ReturnType<typeof grounding.findResources>> = [];
-      try {
-        resources = await grounding.findResources({ query, skills, max });
-      } catch {
-        /* best-effort */
-      }
+      // Community-recommended resources for the job (free research), and how
+      // technical the job is, which decides whether tech-only links fit.
+      const [research, profile] = await Promise.all([
+        researchSafely(deps.research, {
+          field: field ?? skills[0] ?? args.goal ?? "your field",
+          role: ctx.goal?.targetRole,
+          intents: ["resource"],
+          max,
+        }),
+        resolveFieldProfile(horus, field, { userRef: auth.userId, userToken: auth.jwt }),
+      ]);
 
-      // Community-recommended resources for the field (free research), merged in.
-      const research = await researchSafely(deps.research, {
-        field: skills[0] ?? ctx.goal?.targetField ?? args.goal ?? "your field",
-        role: ctx.goal?.targetRole,
-        intents: ["resource"],
-        max,
-      });
+      const searchable = groundingFits(grounding, profile);
+      let resources: Awaited<ReturnType<typeof grounding.findResources>> = [];
+      if (searchable) {
+        try {
+          resources = await grounding.findResources({ query, skills, max });
+        } catch {
+          /* best-effort */
+        }
+      }
       const researched: typeof resources = research.resources.map((s) => ({
         title: s.text.length > 90 ? `${s.text.slice(0, 89)}…` : s.text,
         provider: s.sourceLabel,
@@ -104,17 +136,36 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
         proof: { kind: "community", label: s.sourceLabel, stat: s.stat ?? "community pick", url: s.sourceUrl },
       }));
 
+      // Finished links are never recommended again; saved or started ones say so.
+      const done = finishedUrls(ctx.resources);
       const seen = new Set<string>();
       const merged = [...resources, ...researched]
         .filter((r) => {
-          const u = r.url ?? r.proof.url;
-          if (!u || seen.has(u)) return false;
+          const u = normaliseUrl(r.url ?? r.proof.url);
+          if (!u || seen.has(u) || done.has(u)) return false;
           seen.add(u);
           return true;
         })
-        .slice(0, max);
+        .slice(0, max)
+        .map((r) => {
+          const myStatus = statusFor(ctx.resources, r.url ?? r.proof.url);
+          return myStatus ? { ...r, myStatus } : r;
+        });
 
-      return ok({ query, skills, resources: merged, _meta: { research: researchMeta(research) } });
+      return ok({
+        query,
+        skills,
+        field: field ?? null,
+        resources: merged,
+        _meta: { research: researchMeta(research), techSourcesSkipped: !searchable },
+      });
     },
   );
+}
+
+/** Research signals as a numbered list the tips can point back to. */
+function numberedSignals(signals: ResearchSnippet[]): string {
+  if (signals.length === 0) return "";
+  const lines = signals.map((s, i) => `${i + 1}. ${s.text} [${s.sourceLabel}${s.stat ? `, ${s.stat}` : ""}]`);
+  return `\n\nREAL-WORLD SIGNALS — real posts and pages from people in this field. Counter these, and never invent a source:\n${lines.join("\n")}\n`;
 }

@@ -281,6 +281,49 @@ async function main() {
     }
     console.log(`✓ field preview ("sparky" → ${preview.canonicalTitle}, ${Object.keys(preview.levels).length} stage names)`);
 
+    // A written drill answer is marked by the coach, not self-rated: one of
+    // two points covered, with the quote found in the answer → 5/10.
+    const drill = {
+      prompt: "Design a rate limiter for a public API and say where its state lives.",
+      type: "hands_on",
+      difficulty: "medium",
+      idealAnswerPoints: ["Names token bucket vs sliding window", "Places the state and its hot-key risk"],
+    };
+    const marked = await mustPost("/api/study/drill/result", {
+      skill: "System Design",
+      drill,
+      answerText: "I would use a token bucket per API key, refilled at a fixed rate.",
+      score: 10,
+    });
+    if (marked.scoredBy !== "coach") fail(`a written drill answer wasn't marked by the coach: ${JSON.stringify(marked)}`);
+    const marks = (marked.evaluation?.points ?? []).map((pt: { mark: string }) => pt.mark).join(",");
+    if (marks !== "covered,missing" || marked.score !== 5) {
+      fail(`drill marks/score wrong (${marks}, ${marked.score}): ${JSON.stringify(marked.evaluation)}`);
+    }
+    if (!marked.evaluation.points[0].quote?.text) fail("a covered drill point carries no quote from the answer");
+    const selfRated = await mustPost("/api/study/drill/result", { skill: "System Design", score: 7 });
+    if (selfRated.scoredBy !== "self" || selfRated.score !== 7 || selfRated.evaluation !== null) {
+      fail(`a self-rated drill changed: ${JSON.stringify(selfRated)}`);
+    }
+    console.log(`✓ drill marked by the coach (${marks} → ${marked.score}/10; self-rating ignored), self-rating still works`);
+
+    // Any link can be tracked, not just catalogue rows (dev mode has no DB, so
+    // nothing persists; the request shape and the link's identity are checked).
+    const tracked = await mustPost("/api/study/resource/progress", {
+      url: "https://example.com/guide/#part-2",
+      title: "A guide",
+      skill: "System Design",
+      status: "completed",
+    });
+    if (tracked.url !== "https://example.com/guide" || tracked.status !== "completed" || tracked.resourceId !== null) {
+      fail(`link tracking returned the wrong link: ${JSON.stringify(tracked)}`);
+    }
+    const neither = await post("/api/study/resource/progress", { status: "saved" });
+    if (neither.status !== 400) {
+      fail(`tracking with neither a resource nor a link should be refused: ${JSON.stringify(neither.json)}`);
+    }
+    console.log("✓ a link can be tracked (normalised), and a request with no resource is refused");
+
     // The cost guard actually guards: hammer until 429.
     let tripped = false;
     for (let i = 0; i < RATE_MAX + 5; i++) {

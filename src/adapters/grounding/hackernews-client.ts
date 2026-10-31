@@ -28,6 +28,8 @@ interface HnResponse {
 }
 
 export class HackerNewsGrounding implements GroundingPort {
+  /** Hacker News is a tech community: its links only fit technical fields. */
+  readonly techOnly = true;
   private cache = new Map<string, { at: number; hits: HnHit[] }>();
 
   private async hitsFor(query: string): Promise<HnHit[]> {

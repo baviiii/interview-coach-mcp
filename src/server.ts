@@ -183,7 +183,10 @@ function sendErr(res: Response, e: unknown) {
 async function resolveAuth(header: string | undefined): Promise<AuthContext> {
   if (process.env.AUTH_MODE === "dev") {
     const throwingDb = new Proxy({}, { get() { throw new Error("DB unavailable in AUTH_MODE=dev"); } });
-    return { userId: `dev-${randomUUID()}`, email: null, jwt: "dev", db: throwingDb as never };
+    // No real learner token: an empty one isn't forwarded to the model, so a
+    // dev server can still use a real model (CareerCraft's infer function
+    // rejects a made-up token with 401 "Invalid session").
+    return { userId: `dev-${randomUUID()}`, email: null, jwt: "", db: throwingDb as never };
   }
   return authenticate(extractBearer(header));
 }

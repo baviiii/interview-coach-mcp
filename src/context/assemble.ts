@@ -10,6 +10,7 @@ import type {
   SkillSnapshot,
 } from "../types.js";
 import { readStories } from "./interview-store.js";
+import { readResources } from "./resources.js";
 
 /**
  * The context-normalizer. Reads the learner's real signals (RLS-scoped) and
@@ -40,6 +41,7 @@ export async function assembleLearnerContext(
     milestonesRes,
     recentQuestionThemes,
     stories,
+    resources,
   ] = await Promise.all([
     readProfile(db, userId),
     readSkills(db, userId),
@@ -57,6 +59,7 @@ export async function assembleLearnerContext(
     db.from("user_milestones").select("id", { count: "exact", head: true }).eq("user_id", userId),
     readRecentQuestions(db, userId),
     readStories(db, userId),
+    readResources(db, userId),
   ]);
 
   const profile = profileRes;
@@ -102,6 +105,7 @@ export async function assembleLearnerContext(
     milestonesAchieved: milestonesRes.count ?? 0,
     recentQuestionThemes,
     stories,
+    resources,
     patterns,
     job: null,
   };

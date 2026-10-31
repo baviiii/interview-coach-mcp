@@ -7,7 +7,10 @@ import {
   type ResearchPort,
   type ResearchRequest,
 } from "../adapters/research/index.js";
+import type { GroundingPort, ProofSource } from "../adapters/grounding/index.js";
+import type { ResearchSnippet } from "../adapters/research/port.js";
 import { config } from "../config.js";
+import type { FieldProfile } from "../domain/field-profile.js";
 
 export function ok(data: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
@@ -60,4 +63,32 @@ export function clampScore(v: unknown): number | null {
   const n = num(v);
   if (n === null) return null;
   return Math.max(0, Math.min(99.99, n));
+}
+
+/** Interview formats only software and IT jobs use: the jobs a tech community's links fit. */
+const TECH_INDUSTRY_FORMATS: ReadonlySet<string> = new Set(["coding", "system_design"]);
+
+/**
+ * Whether this proof source's links fit the field. A tech-only source (Hacker
+ * News) is used only for software and IT jobs: under a nurse's or a chef's tip
+ * its links are off-topic, and no link (the tip says "unverified") beats a
+ * wrong one.
+ *
+ * The test is the job's interview formats, not how technical its interviews
+ * are: a nurse's interviews are highly technical (the live model rates them
+ * so) but clinical, and Hacker News has nothing on them. A field whose profile
+ * couldn't be worked out has neutral formats, so it doesn't qualify.
+ */
+export function groundingFits(grounding: GroundingPort, profile: Pick<FieldProfile, "domainFormats">): boolean {
+  return !grounding.techOnly || profile.domainFormats.some((f) => TECH_INDUSTRY_FORMATS.has(f));
+}
+
+/** A research snippet as a proof chip: the real post or page it came from. */
+export function proofFromSnippet(s: ResearchSnippet): ProofSource {
+  return {
+    kind: s.sourceLabel.startsWith("r/") || /reddit\.com/.test(s.sourceUrl) ? "reddit" : "community",
+    label: s.sourceLabel,
+    stat: s.stat ?? "Real post",
+    url: s.sourceUrl,
+  };
 }

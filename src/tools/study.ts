@@ -3,7 +3,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { resolveFieldProfile } from "../context/field-profile.js";
 import { persistSkillSignal, persistSkillSignals } from "../context/persist.js";
-import { drillPrompt, explainConceptPrompt, studyPlanPrompt } from "../domain/prompts.js";
+import { normaliseUrl, trackResource } from "../context/resources.js";
+import { drillEvaluationPrompt, drillPrompt, explainConceptPrompt, studyPlanPrompt } from "../domain/prompts.js";
+import { buildDrillScore } from "../domain/scoring.js";
 import {
   drillDifficulty,
   nextReviewInDays,
@@ -212,36 +214,85 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Record a drill result",
       description:
-        "Closes the spaced-repetition loop: scores the drill 0-10, updates the skill's proficiency/trend/last-tested in the matrix, and returns the new level plus when the skill is due again. No LLM call — instant.",
+        "Closes the spaced-repetition loop. Pass answerText (with the drill) and the coach marks the answer against the drill's ideal points, quoting the words that show each one; or pass a self-rated score. Then it updates the skill's proficiency/trend/last-tested in the matrix and returns the new level plus when the skill is due again.",
       inputSchema: S.recordDrillResultInput,
     },
     async (args) => {
+      const answer = args.answerText?.trim() ?? "";
+      if (!answer && args.score === undefined) {
+        return err("Pass `answerText` (with the `drill`) for the coach to mark, or a self-rated `score` from 0 to 10.");
+      }
+      if (answer && !args.drill) {
+        return err("Pass the `drill` the answer is for, so the coach can mark it against its ideal points.");
+      }
+
       const ctx = await assembleLearnerContext(auth.db, auth.userId, {});
       const known = ctx.skills.find((s) => s.name.toLowerCase() === args.skill.toLowerCase());
+
+      // A written answer is marked by the coach, and that mark is what moves
+      // the skill; a self-rating only stands in when they didn't write one.
+      let score = args.score ?? 0;
+      let evaluation: Record<string, unknown> | null = null;
+      let model: string | undefined;
+      if (answer && args.drill) {
+        const idealPoints = args.drill.idealAnswerPoints ?? [];
+        const { system, user } = drillEvaluationPrompt({
+          skill: known?.name ?? args.skill,
+          field: args.field ?? ctx.targetField,
+          drill: { ...args.drill, idealAnswerPoints: idealPoints },
+          answer,
+        });
+        const res = await horus.infer<DrillEvaluationData>({
+          task: "study.evaluate_drill",
+          system,
+          messages: [{ role: "user", content: user }],
+          model: "deep",
+          // Marking must be stable across runs, like interview scoring.
+          temperature: 0.2,
+          userRef: auth.userId,
+          userToken: auth.jwt,
+        });
+        const built = buildDrillScore(answer, idealPoints, res.data.points, res.data.cap, res.data.score);
+        score = built.final;
+        model = res.model;
+        evaluation = {
+          points: built.points,
+          coverage: built.coverage,
+          cap: built.cap,
+          fellBack: built.fellBack,
+          whatWorked: line(res.data.whatWorked),
+          whatsMissing: line(res.data.whatsMissing),
+          oneThingToTry: line(res.data.oneThingToTry),
+        };
+      }
+
       const previous = known?.proficiency ?? 0;
-      const projected = proficiencyNudge(previous, args.score);
+      const projected = proficiencyNudge(previous, score);
 
       const result = await persistSkillSignal(auth.db, auth.userId, {
         name: known?.name ?? args.skill,
         category: known?.category,
-        drillScore: args.score,
+        drillScore: score,
       });
 
       const effective = result.newProficiency ?? projected;
       return ok({
         skill: known?.name ?? args.skill,
-        score: args.score,
+        score,
+        scoredBy: evaluation ? "coach" : "self",
+        evaluation,
         previousProficiency: result.previousProficiency ?? previous,
         newProficiency: effective,
         delta: effective - (result.previousProficiency ?? previous),
         nextReviewInDays: nextReviewInDays(effective),
         verdict:
-          args.score >= 8
+          score >= 8
             ? "Strong — interval extended."
-            : args.score >= 5
+            : score >= 5
               ? "Holding — keep the cadence."
               : "Shaky — this skill comes back sooner.",
         persisted: result.persisted,
+        ...(model ? { _meta: { model } } : {}),
       });
     },
   );
@@ -286,60 +337,35 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Track learning-resource progress",
       description:
-        "Updates the learner's status on a learning resource (saved → in progress → completed, with optional rating/notes). Completing a resource credits its linked skills in the matrix — progress feeds personalization.",
+        "Updates the learner's status on a learning resource (saved → in progress → completed, with optional rating/notes): a catalogue row by resourceId, or any link by url. Finishing one credits a skill in the matrix, once — the catalogue row's skill tags, or the link's skill.",
       inputSchema: S.trackResourceProgressInput,
     },
     async (args) => {
-      const nowIso = new Date().toISOString();
-      let persisted = false;
-      try {
-        const { error } = await auth.db.from("user_resources").upsert(
-          {
-            user_id: auth.userId,
-            resource_id: args.resourceId,
-            status: args.status,
-            progress_percent:
-              args.progressPercent ?? (args.status === "completed" ? 100 : args.status === "in_progress" ? 10 : 0),
-            ...(args.rating ? { user_rating: args.rating } : {}),
-            ...(args.notes ? { notes: args.notes } : {}),
-            ...(args.status === "in_progress" ? { started_at: nowIso } : {}),
-            ...(args.status === "completed" ? { completed_at: nowIso } : {}),
-          },
-          { onConflict: "user_id,resource_id" },
-        );
-        persisted = !error;
-      } catch {
-        /* best-effort */
-      }
-
-      // Completion is learning evidence — credit the resource's linked skills.
-      let skillsCredited: string[] = [];
-      if (args.status === "completed") {
-        try {
-          const { data: resource } = await auth.db
-            .from("learning_resources")
-            .select("title, skill_tags")
-            .eq("id", args.resourceId)
-            .maybeSingle();
-          const tagIds: string[] = Array.isArray(resource?.skill_tags) ? resource!.skill_tags : [];
-          if (tagIds.length > 0) {
-            const { data: tags } = await auth.db.from("skill_tags").select("name, category").in("id", tagIds);
-            const signals = (tags ?? []).map((t: any) => ({
-              name: t.name as string,
-              category: t.category as string | undefined,
-              drillScore: 6.5, // completing a resource ≈ a decent practice session
-            }));
-            if (signals.length > 0) {
-              await persistSkillSignals(auth.db, auth.userId, signals);
-              skillsCredited = signals.map((s) => s.name);
-            }
-          }
-        } catch {
-          /* best-effort */
-        }
-      }
-
-      return ok({ resourceId: args.resourceId, status: args.status, persisted, skillsCredited });
+      if (!args.resourceId && !args.url) return err("Pass `resourceId` (a catalogue row) or `url` (a link).");
+      const outcome = await trackResource(auth.db, auth.userId, args);
+      return ok({
+        resourceId: args.resourceId ?? null,
+        url: args.resourceId ? null : normaliseUrl(args.url),
+        status: args.status,
+        previousStatus: outcome.previousStatus,
+        persisted: outcome.persisted,
+        skillsCredited: outcome.skillsCredited,
+      });
     },
   );
+}
+
+/** What the drill marker returns — the parts this tool reads. */
+interface DrillEvaluationData {
+  points?: unknown;
+  cap?: unknown;
+  score?: unknown;
+  whatWorked?: unknown;
+  whatsMissing?: unknown;
+  oneThingToTry?: unknown;
+}
+
+/** A feedback line from the model, or empty when it gave none. */
+function line(v: unknown): string {
+  return typeof v === "string" ? v.trim().slice(0, 600) : "";
 }

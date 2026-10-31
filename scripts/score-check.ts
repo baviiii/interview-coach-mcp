@@ -13,13 +13,15 @@
  *   - a strong story's STAR quotes are found in the answer (the highlights
  *     are real, not paraphrases).
  *
+ * Drills get the same two checks, marked against their ideal points.
+ *
  * Not part of CI: it needs a model key and costs a few cents a run. In mock
  * mode it refuses rather than passing on canned scores.
  */
 import { getModelProvider } from "../src/adapters/horus/index.js";
 import { config } from "../src/config.js";
-import { evaluateAnswerPrompt } from "../src/domain/prompts.js";
-import { buildScore, locateQuotes, ownershipCounts, rubricFor } from "../src/domain/scoring.js";
+import { drillEvaluationPrompt, evaluateAnswerPrompt } from "../src/domain/prompts.js";
+import { buildDrillScore, buildScore, locateQuotes, ownershipCounts, rubricFor } from "../src/domain/scoring.js";
 
 if (config.horus.mode === "mock") {
   console.error("score-check needs a real model: set HORUS_MODE=http (or gateway) and its credentials.");
@@ -65,6 +67,35 @@ const CASES: Case[] = [
   },
 ];
 
+interface DrillCase {
+  name: string;
+  skill: string;
+  field: string;
+  prompt: string;
+  idealAnswerPoints: string[];
+  strong: string;
+  weak: string;
+}
+
+const DRILL_CASES: DrillCase[] = [
+  {
+    name: "drill: nursing dose",
+    skill: "Medication calculation",
+    field: "Registered Nurse",
+    prompt:
+      "A 20 kg child is ordered paracetamol 15 mg/kg orally. The suspension is 120 mg in 5 mL. Work out the volume to give and say what you check before giving it.",
+    idealAnswerPoints: [
+      "Calculates the dose: 15 mg/kg × 20 kg = 300 mg",
+      "Converts to volume: 300 mg ÷ 120 mg per 5 mL = 12.5 mL",
+      "Checks the maximum daily dose and when the last dose was given",
+      "Checks the patient's identity and allergies against the order",
+    ],
+    strong:
+      "The dose is 15 mg/kg times 20 kg, which is 300 mg. The suspension is 120 mg in 5 mL, so 300 divided by 120 is 2.5, and 2.5 times 5 mL is 12.5 mL. Before giving it I check two identifiers on the wristband against the chart, confirm there are no allergies, and look at the medication record for when paracetamol was last given so we stay under the maximum daily dose of 60 mg/kg.",
+    weak: "I'd give about 10 mL, that's usually the amount for a child that size.",
+  },
+];
+
 const RUNS = 3;
 const provider = getModelProvider();
 
@@ -88,13 +119,48 @@ async function score(c: Case, answer: string) {
   return { final: build.final, highlights: rubric.star ? locateQuotes(answer, res.data.starQuotes).length : null };
 }
 
+async function scoreDrill(c: DrillCase, answer: string) {
+  const { system, user } = drillEvaluationPrompt({
+    skill: c.skill,
+    field: c.field,
+    drill: { prompt: c.prompt, type: "hands_on", difficulty: "medium", idealAnswerPoints: c.idealAnswerPoints },
+    answer,
+  });
+  const res = await provider.infer<Record<string, unknown>>({
+    task: "study.evaluate_drill",
+    system,
+    messages: [{ role: "user", content: user }],
+    model: "deep",
+    temperature: 0.2,
+  });
+  const build = buildDrillScore(answer, c.idealAnswerPoints, res.data.points, res.data.cap, res.data.score);
+  return { final: build.final, highlights: null };
+}
+
+/**
+ * RUNS calls, one after another. In parallel, CareerCraft's infer function
+ * fails to start extra workers (503 BOOT_ERROR) on long evaluations, and this
+ * check is about the scores, not the function's concurrency.
+ */
+async function repeat<T>(run: () => Promise<T>): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < RUNS; i += 1) out.push(await run());
+  return out;
+}
+
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
 const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
 
+type Scorer = (answer: string) => Promise<{ final: number; highlights: number | null }>;
+const RUNNABLE: Array<{ name: string; strong: string; weak: string; run: Scorer }> = [
+  ...CASES.map((c) => ({ name: c.name, strong: c.strong, weak: c.weak, run: (a: string) => score(c, a) })),
+  ...DRILL_CASES.map((c) => ({ name: c.name, strong: c.strong, weak: c.weak, run: (a: string) => scoreDrill(c, a) })),
+];
+
 let failures = 0;
-for (const c of CASES) {
-  const strong = await Promise.all(Array.from({ length: RUNS }, () => score(c, c.strong)));
-  const weak = await Promise.all(Array.from({ length: RUNS }, () => score(c, c.weak)));
+for (const c of RUNNABLE) {
+  const strong = await repeat(() => c.run(c.strong));
+  const weak = await repeat(() => c.run(c.weak));
   const s = strong.map((r) => r.final);
   const w = weak.map((r) => r.final);
   const gap = mean(s) - mean(w);

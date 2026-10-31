@@ -156,14 +156,18 @@ export const explainInput = {
   recommendationId: z.string().uuid(),
 };
 
+const JOB_HELP = "The job being prepared for (e.g. 'Registered Nurse'). Research and proof links follow the job, not the skill.";
+
 export const provenTipsInput = {
   skill: z.string().optional(),
+  field: z.string().max(100).optional().describe(JOB_HELP),
   question: z.string().max(4000).optional(),
   count: z.number().int().min(1).max(8).optional(),
 };
 
 export const provenResourcesInput = {
   skills: z.array(z.string()).optional(),
+  field: z.string().max(100).optional().describe(JOB_HELP),
   goal: z.string().optional(),
   maxResults: z.number().int().min(1).max(12).optional(),
 };
@@ -248,7 +252,23 @@ export const nextDrillInput = {
 
 export const recordDrillResultInput = {
   skill: z.string().min(1).max(100),
-  score: z.number().min(0).max(10),
+  score: z
+    .number()
+    .min(0)
+    .max(10)
+    .optional()
+    .describe("Self-rated, 0-10. Ignored when answerText is given: the coach marks the answer instead."),
+  answerText: z.string().max(8000).optional().describe("The learner's answer to the drill, for the coach to mark."),
+  drill: z
+    .object({
+      prompt: z.string().min(5).max(4000),
+      type: z.string().max(40).optional(),
+      difficulty: z.string().max(20).optional(),
+      idealAnswerPoints: z.array(z.string().max(500)).max(12).optional(),
+    })
+    .optional()
+    .describe("The drill the answer is for, as next_drill returned it. Required with answerText."),
+  field: z.string().max(100).optional(),
   drillType: z.string().max(50).optional(),
   notes: z.string().max(2000).optional(),
 };
@@ -260,7 +280,11 @@ export const explainConceptInput = {
 };
 
 export const trackResourceProgressInput = {
-  resourceId: z.string().uuid(),
+  resourceId: z.string().uuid().optional().describe("A learning_resources row. Pass this or url."),
+  url: z.string().url().max(2000).optional().describe("A link the coach found or suggested. Pass this or resourceId."),
+  title: z.string().max(300).optional(),
+  provider: z.string().max(120).optional(),
+  skill: z.string().max(100).optional().describe("The skill finishing it counts towards (a pathway item's forSkill)."),
   status: z.enum(["saved", "in_progress", "completed"]),
   progressPercent: z.number().int().min(0).max(100).optional(),
   rating: z.number().int().min(1).max(5).optional(),

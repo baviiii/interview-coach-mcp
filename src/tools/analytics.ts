@@ -1,13 +1,69 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { assembleLearnerContext } from "../context/assemble.js";
+import { readPracticeSignals, type PracticeSignals } from "../context/interview-store.js";
+import { newestSessionId, saveResult } from "../context/saved-results.js";
+import { competencyLabel, competencySet, storyStrength } from "../domain/competencies.js";
 import { parseRoundType, ROUND_LABELS, ROUND_TYPES } from "../domain/interview-loop.js";
 import type { AuthContext } from "../server/auth.js";
 import * as S from "../schemas.js";
 import { num, ok } from "./_util.js";
+import type { LearnerContext } from "../types.js";
 import type { ToolDeps } from "./interview.js";
 
 const MIX_DAYS = 28;
+
+/** Finished sessions before the coach reads patterns: fewer is noise, not a pattern. */
+export const PATTERN_MIN_SESSIONS = 3;
+
+/**
+ * Their practice as evidence the pattern read must cite: results by round
+ * type, STAR habits, answer length and the story library. Plain counts, so a
+ * claim like "Result missing in 4 of 6 stories" can be checked against it.
+ */
+export function practiceEvidence(signals: PracticeSignals, ctx: Pick<LearnerContext, "stories" | "targetSeniority">): string {
+  const blocks: string[] = [];
+
+  const byType = ROUND_TYPES.map((type) => {
+    const rows = signals.sessions.filter((s) => parseRoundType(s.roundType) === type);
+    if (!rows.length) return `- ${ROUND_LABELS[type]}: none finished`;
+    const scores = rows.map((r) => r.score).filter((n): n is number => n !== null && n > 0);
+    const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+    const latest = scores[0] !== undefined ? Math.round(scores[0]) : null;
+    return `- ${ROUND_LABELS[type]}: ${rows.length} finished${latest !== null ? `, latest ${latest}/100` : ""}${avg !== null ? `, average ${avg}/100` : ""}`;
+  });
+  blocks.push(`RESULTS BY ROUND TYPE (last ${signals.sessions.length} finished sessions):\n${byType.join("\n")}`);
+
+  if (signals.star.stories > 0) {
+    const parts = signals.star.parts.map((p) => {
+      const total = p.present + p.thin + p.missing;
+      return `- ${p.part[0]!.toUpperCase()}${p.part.slice(1)}: there in ${p.present} of ${total}, thin in ${p.thin}, missing in ${p.missing}`;
+    });
+    const owned = signals.star.i + signals.star.we
+      ? `\n- Said "I" ${signals.star.i} times and "we" ${signals.star.we} times`
+      : "";
+    blocks.push(`STAR HABITS (their last ${signals.star.stories} story answers):\n${parts.join("\n")}${owned}`);
+  }
+
+  const { short, ok: fine, long } = signals.length;
+  if (short + fine + long > 0) {
+    blocks.push(`ANSWER LENGTH (scored answers with a length band): ${short} too short, ${fine} within range, ${long} too long`);
+  }
+
+  const stories = ctx.stories ?? [];
+  const have = new Set(stories.map((s) => s.competency));
+  const storyLines = stories
+    .slice(0, 12)
+    .map((s) => `- ${competencyLabel(s.competency, ctx.targetSeniority)}: ${storyStrength(s.bestScore)}${s.bestScore !== null ? ` (${s.bestScore}/10)` : ""}, practised ${s.timesPractised}x`);
+  const none = competencySet({ seniority: ctx.targetSeniority })
+    .filter((c) => !have.has(c.key))
+    .map((c) => c.label);
+  blocks.push(
+    `STORY LIBRARY (best story per competency):\n${storyLines.join("\n") || "- none saved yet"}${none.length ? `\n- No story yet for: ${none.join(", ")}` : ""}`,
+  );
+
+  return blocks.join("\n\n");
+}
 
 /**
  * The last four weeks of practice, by round type. Without it the weekly note
@@ -57,14 +113,20 @@ export function registerAnalyticsTools(server: McpServer, deps: ToolDeps): void 
     {
       title: "Analyze interview performance patterns",
       description:
-        "Detects recurring strengths/weaknesses, trends and correlations across the learner's skill history and recent scores, then returns targeted recommendations.",
+        "Reads the learner's patterns across their practice (results by round type, STAR habits, answer length, story library, skill history) once they've finished at least three sessions: recurring strengths and weaknesses, each with its evidence, risk areas and targeted recommendations. Saved, so the site shows it until a newer session is finished.",
       inputSchema: S.analyzePatternsInput,
     },
     async (args) => {
-      const ctx = await assembleLearnerContext(auth.db, auth.userId, {
-        field: args.field,
-        seniority: args.seniority,
-      });
+      const [ctx, signals] = await Promise.all([
+        assembleLearnerContext(auth.db, auth.userId, { field: args.field, seniority: args.seniority }),
+        readPracticeSignals(auth.db, auth.userId),
+      ]);
+
+      // A read of two sessions is a guess dressed as a pattern.
+      const finished = signals.sessions.length;
+      if (finished < PATTERN_MIN_SESSIONS) {
+        return ok({ ready: false, finished, sessionsNeeded: PATTERN_MIN_SESSIONS - finished });
+      }
 
       const system = `You are an AI career coach specializing in identifying patterns and providing personalized improvement strategies. Analyze the learner's interview performance data to find actionable insights.
 
@@ -74,6 +136,8 @@ Your analysis should:
 3. Find correlations between different skills
 4. Suggest targeted practice areas
 5. Predict areas of future difficulty
+
+Every strength, weakness and risk must cite its evidence from the data you're given, with the numbers ("Result missing in 4 of 6 stories", "two phone screens, both under 60"). Name nothing the data doesn't show. Plain, specific language — no hype.
 
 Return ONLY JSON with this structure:
 {
@@ -106,6 +170,8 @@ BEHAVIORAL PATTERNS:
 - Current streak (days): ${ctx.patterns?.currentStreakDays ?? 0}
 - Total sessions: ${ctx.patterns?.totalSessions ?? 0}
 
+${practiceEvidence(signals, ctx)}
+
 Identify patterns and provide actionable recommendations grounded strictly in the data above.`;
 
       const res = await horus.infer({
@@ -116,7 +182,16 @@ Identify patterns and provide actionable recommendations grounded strictly in th
         userRef: auth.userId,
         userToken: auth.jwt,
       });
-      return ok({ ...(res.data as object), _meta: { model: res.model } });
+      // Saved with the newest finished session it read: the site shows this
+      // read until another session is finished, instead of asking again.
+      const read = { ...(res.data as object), ready: true, finished, basedOn: signals.sessions[0]!.id };
+      await saveResult(auth.db, auth.userId, {
+        type: "pattern_analysis",
+        title: "Coach's read of your practice",
+        subject: args.field ?? ctx.targetField,
+        payload: read,
+      });
+      return ok({ ...read, _meta: { model: res.model } });
     },
   );
 
@@ -169,15 +244,27 @@ SKILLS NEEDING WORK: ${ctx.weakSkills.map((s) => s.name).join(", ") || "none yet
 ${mix ? `\n${mix}\nRound types: Phone screen = a recruiter's first call; Behavioural = past-situation (STAR) questions; Technical = the work itself; Full interview = a mixed final round. If they've skipped a type that their next real interview will include, say so and make practising it one of the weekly goals.\n` : ""}
 Do not invent metrics that aren't supported by the data above.`;
 
-      const res = await horus.infer({
-        task: "analytics.weekly_insight",
-        system,
-        messages: [{ role: "user", content: user }],
-        model: "fast",
-        userRef: auth.userId,
-        userToken: auth.jwt,
+      const [res, basedOn] = await Promise.all([
+        horus.infer({
+          task: "analytics.weekly_insight",
+          system,
+          messages: [{ role: "user", content: user }],
+          model: "fast",
+          userRef: auth.userId,
+          userToken: auth.jwt,
+        }),
+        newestSessionId(auth.db, auth.userId),
+      ]);
+      // Saved with the session it was written after: the site shows this note
+      // until a newer session exists, instead of asking again on every visit.
+      const insight = { ...(res.data as object), basedOn };
+      await saveResult(auth.db, auth.userId, {
+        type: "weekly_insight",
+        title: "Weekly practice note",
+        subject: args.field ?? ctx.targetField,
+        payload: insight,
       });
-      return ok({ ...(res.data as object), _meta: { model: res.model } });
+      return ok({ ...insight, _meta: { model: res.model } });
     },
   );
 }

@@ -217,3 +217,98 @@ export async function readStoryTexts(
     return [];
   }
 }
+
+/* ── practice signals (for the coach's read of their patterns) ─────────── */
+
+const STAR_PARTS = ["situation", "task", "action", "result", "reflection"] as const;
+
+export interface PracticeSignals {
+  /** Finished sessions, newest first (up to 20). */
+  sessions: Array<{ id: string; roundType: string | null; score: number | null; completedAt: string | null }>;
+  /** How their last story answers (up to 10) covered each STAR(R) part. */
+  star: {
+    stories: number;
+    parts: Array<{ part: (typeof STAR_PARTS)[number]; present: number; thin: number; missing: number }>;
+    /** "I" vs "we" across those stories. */
+    i: number;
+    we: number;
+  };
+  /** Answer length against its band, across their last 30 scored answers. */
+  length: { short: number; ok: number; long: number };
+}
+
+/**
+ * What their practice shows beyond scores: the round types they've finished,
+ * STAR habits and answer length, read the same way the site's STAR habits
+ * panel reads them (the evaluation stored with each answer).
+ */
+export async function readPracticeSignals(db: Db, userId: string): Promise<PracticeSignals> {
+  const empty: PracticeSignals = {
+    sessions: [],
+    star: { stories: 0, parts: [], i: 0, we: 0 },
+    length: { short: 0, ok: 0, long: 0 },
+  };
+  try {
+    const [sessionsRes, answersRes] = await Promise.all([
+      db
+        .from("interview_sessions")
+        .select("id, round_type, avg_score, completed_at")
+        .eq("user_id", userId)
+        .eq("status", "completed")
+        .order("completed_at", { ascending: false })
+        .limit(20),
+      db
+        .from("interview_answers")
+        .select("evaluation, answered_at")
+        .eq("user_id", userId)
+        .not("evaluation", "is", null)
+        .order("answered_at", { ascending: false })
+        .limit(30),
+    ]);
+
+    const sessions = (sessionsRes.data ?? []).map((r: Record<string, unknown>) => ({
+      id: String(r.id),
+      roundType: typeof r.round_type === "string" ? r.round_type : null,
+      score: r.avg_score == null ? null : Number(r.avg_score),
+      completedAt: typeof r.completed_at === "string" ? r.completed_at : null,
+    }));
+
+    const evaluations = (answersRes.data ?? []).map(
+      (r: Record<string, unknown>) =>
+        (r.evaluation ?? {}) as {
+          starBreakdown?: Record<string, unknown> | null;
+          ownership?: { i?: number; we?: number } | null;
+          lengthCheck?: { verdict?: string } | null;
+        },
+    );
+    const stories = evaluations.filter((e) => e.starBreakdown && typeof e.starBreakdown === "object").slice(0, 10);
+    const parts = STAR_PARTS.map((part) => {
+      const marks = stories.map((s) => s.starBreakdown![part]);
+      return {
+        part,
+        present: marks.filter((m) => m === "present").length,
+        thin: marks.filter((m) => m === "thin").length,
+        missing: marks.filter((m) => m === "missing").length,
+      };
+    }).filter((p) => p.present + p.thin + p.missing > 0);
+    const owned = stories.map((s) => s.ownership).filter((o): o is { i?: number; we?: number } => !!o);
+
+    const verdicts = evaluations.map((e) => e.lengthCheck?.verdict);
+    return {
+      sessions,
+      star: {
+        stories: stories.length,
+        parts,
+        i: owned.reduce((n, o) => n + (Number(o.i) || 0), 0),
+        we: owned.reduce((n, o) => n + (Number(o.we) || 0), 0),
+      },
+      length: {
+        short: verdicts.filter((v) => v === "short").length,
+        ok: verdicts.filter((v) => v === "ok").length,
+        long: verdicts.filter((v) => v === "long").length,
+      },
+    };
+  } catch {
+    return empty;
+  }
+}

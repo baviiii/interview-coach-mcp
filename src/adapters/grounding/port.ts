@@ -33,6 +33,12 @@ export interface GroundedResource {
 }
 
 export interface GroundingPort {
+  /**
+   * True for a source that only knows tech (Hacker News). Its links are skipped
+   * for fields whose interviews aren't technical, where they'd be off-topic
+   * (a programming thread under a nurse's tip). See `groundingFits`.
+   */
+  readonly techOnly?: boolean;
   /** Best real source backing a claim/tip, or null if nothing credible is found. */
   findEvidence(req: { claim: string; skill?: string; preferKind?: ProofKind }): Promise<ProofSource | null>;
   /** Candidate resources for a skill/goal, each carrying a proof source. */

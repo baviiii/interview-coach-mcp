@@ -13,6 +13,10 @@ import { readdirSync, readFileSync } from "node:fs";
 
 import { skillLevel } from "../src/context/assemble.js";
 import { nextLevel, normalizeSkillCategory } from "../src/context/persist.js";
+import { creditsSkill, finishedUrls, normaliseUrl, statusFor } from "../src/context/resources.js";
+import { savedKey } from "../src/context/saved-results.js";
+import { groundingFits, proofFromSnippet } from "../src/tools/_util.js";
+import { practiceEvidence } from "../src/tools/analytics.js";
 import { FUNCTIONS_USED, TABLES_USED } from "../src/schema-used.js";
 
 import {
@@ -51,7 +55,16 @@ import {
   realWorldBlock,
   selectionCriterionPrompt,
 } from "../src/domain/prompts.js";
-import { buildScore, locateQuotes, ownershipCounts, readCap, rubricFor } from "../src/domain/scoring.js";
+import {
+  buildDrillScore,
+  buildScore,
+  DRILL_CAP,
+  findQuote,
+  locateQuotes,
+  ownershipCounts,
+  readCap,
+  rubricFor,
+} from "../src/domain/scoring.js";
 import { latestPerQuestion, sameQuestion } from "../src/tools/interview.js";
 import { canonicalField, resolveFieldProfile } from "../src/context/field-profile.js";
 import { deriveSkillTargets } from "../src/domain/targets.js";
@@ -829,6 +842,144 @@ check("retries, ownership and framework reach the evaluator", () => {
   assert.match(sc.system, /Never invent/);
   assert.match(sc.system, /under 250 words/);
   assert.match(sc.user, /no stories saved yet/);
+});
+
+check("a saved result is filed under the job as the site will look it up", () => {
+  assert.equal(savedKey("  Registered   Nurse "), "registered nurse");
+  assert.equal(savedKey("Registered Nurse"), savedKey("registered nurse"));
+  assert.equal(savedKey(""), null);
+  assert.equal(savedKey("   "), null);
+  assert.equal(savedKey(undefined), null);
+  assert.equal(savedKey("x".repeat(300))!.length, 200);
+});
+
+check("a quote is found whatever its case, quote marks and spacing", () => {
+  const answer = "I’d check the   patient’s ID band first, then the chart.";
+  const span = findQuote(answer, "i'd check the patient's id band");
+  assert.ok(span);
+  assert.equal(answer.slice(span!.start, span!.end), "I’d check the   patient’s ID band");
+  assert.equal(findQuote(answer, "check the wristband"), null, "words not in the answer");
+  assert.equal(findQuote(answer, "ID band"), null, "too short to count as evidence");
+});
+
+const DRILL_ANSWER =
+  "First I confirm the order against the chart. Then I calculate 5 mg/kg for a 20 kg child, which is 100 mg. I'd ask a second nurse to check it.";
+const DRILL_POINTS = ["Confirms the order", "Calculates the dose correctly", "Gets an independent double-check"];
+
+check("a drill score is the share of points covered, with partial counting half", () => {
+  const s = buildDrillScore(
+    DRILL_ANSWER,
+    DRILL_POINTS,
+    [
+      { mark: "covered", quote: "I confirm the order against the chart", note: "" },
+      { mark: "partial", quote: "which is 100 mg", note: "no working shown" },
+      { mark: "missing", quote: null, note: "" },
+    ],
+    null,
+    9,
+  );
+  assert.deepEqual(s.points.map((p) => p.mark), ["covered", "partial", "missing"]);
+  assert.equal(s.final, 5, "(1 + 0.5 + 0) / 3 × 10");
+  assert.equal(s.points[0]!.quote!.text, "I confirm the order against the chart");
+  assert.equal(s.fellBack, false);
+});
+
+check("a drill mark needs evidence: a quote that isn't in the answer drops it a step", () => {
+  const s = buildDrillScore(
+    DRILL_ANSWER,
+    DRILL_POINTS,
+    [
+      { mark: "covered", quote: "I would scan the barcode on the vial", note: "" },
+      { mark: "partial", quote: "rounded to the nearest tablet", note: "" },
+      { mark: "covered", quote: "ask a second nurse to check it", note: "" },
+    ],
+    null,
+    null,
+  );
+  assert.deepEqual(s.points.map((p) => p.mark), ["partial", "missing", "covered"]);
+  assert.equal(s.points[0]!.quote, null);
+  assert.equal(s.final, 5);
+});
+
+check("a wrong or unsafe claim caps a drill, but never raises a low one", () => {
+  const all = DRILL_POINTS.map(() => ({ mark: "covered", quote: "I confirm the order against the chart" }));
+  const capped = buildDrillScore(DRILL_ANSWER, DRILL_POINTS, all, { reason: '"100 mg" is ten times the dose' }, 9);
+  assert.equal(capped.final, DRILL_CAP);
+  assert.match(capped.cap!.reason, /ten times/);
+  const low = buildDrillScore(DRILL_ANSWER, DRILL_POINTS, [], { reason: "wrong" }, 2);
+  assert.equal(low.final, 0);
+  assert.equal(low.cap, null, "a cap above the score isn't a cap");
+  assert.equal(buildDrillScore(DRILL_ANSWER, DRILL_POINTS, all, { reason: "  " }, 9).cap, null, "a cap needs a reason");
+});
+
+check("a tracked link is the same link with or without a trailing slash or #anchor", () => {
+  assert.equal(normaliseUrl(" https://example.com/guide/ "), "https://example.com/guide");
+  assert.equal(normaliseUrl("https://example.com/guide#part-2"), "https://example.com/guide");
+  assert.equal(normaliseUrl(""), null);
+  const mine = [
+    { title: "A", url: "https://example.com/a/", status: "completed" as const },
+    { title: "B", url: "https://example.com/b", status: "in_progress" as const },
+    { title: "C", resourceId: "00000000-0000-0000-0000-000000000001", status: "completed" as const },
+  ];
+  assert.deepEqual([...finishedUrls(mine)], ["https://example.com/a"], "only finished links, catalogue rows have none");
+  assert.equal(statusFor(mine, "https://example.com/b#top"), "in_progress");
+  assert.equal(statusFor(mine, "https://example.com/z"), undefined);
+});
+
+check("finishing a resource credits its skill once, and only when the save landed", () => {
+  assert.equal(creditsSkill(null, "completed", true), true);
+  assert.equal(creditsSkill("in_progress", "completed", true), true);
+  assert.equal(creditsSkill("completed", "completed", true), false, "a second 'done' adds nothing");
+  assert.equal(creditsSkill(null, "completed", false), false, "nothing saved, nothing credited");
+  assert.equal(creditsSkill(null, "in_progress", true), false);
+});
+
+check("tech-only proof links are used for software and IT jobs only", () => {
+  const hn = { techOnly: true, findEvidence: async () => null, findResources: async () => [] };
+  const any = { findEvidence: async () => null, findResources: async () => [] };
+  assert.equal(groundingFits(hn, { domainFormats: ["coding", "system_design"] }), true, "software engineer");
+  // Nursing interviews are highly technical, but clinical: Hacker News has nothing on them.
+  assert.equal(groundingFits(hn, { domainFormats: ["practical", "case_study", "technical"] }), false, "registered nurse");
+  assert.equal(groundingFits(hn, neutralProfile("Unknown job")), false, "an unknown job isn't assumed to be in tech");
+  assert.equal(groundingFits(any, { domainFormats: ["practical"] }), true, "a general source fits every job");
+  const proof = proofFromSnippet({ kind: "experience", text: "t", sourceUrl: "https://www.reddit.com/r/nursing/x", sourceLabel: "r/nursing" });
+  assert.equal(proof.kind, "reddit");
+  assert.equal(proof.url, "https://www.reddit.com/r/nursing/x");
+});
+
+check("the pattern read gets countable evidence: round types, STAR habits, length, stories", () => {
+  const text = practiceEvidence(
+    {
+      sessions: [
+        { id: "3", roundType: "screen", score: 58, completedAt: null },
+        { id: "2", roundType: "behavioral", score: 71, completedAt: null },
+        { id: "1", roundType: null, score: 64, completedAt: null },
+      ],
+      star: {
+        stories: 6,
+        parts: [{ part: "result", present: 2, thin: 0, missing: 4 }],
+        i: 12,
+        we: 30,
+      },
+      length: { short: 1, ok: 3, long: 5 },
+    },
+    { stories: [{ competency: "ownership", title: "t", bestScore: 8.2, timesPractised: 2 }] },
+  );
+  assert.match(text, /Phone screen: 1 finished, latest 58\/100/);
+  assert.match(text, /Full interview: 1 finished/, "a session without a type was a full loop");
+  assert.match(text, /Technical: none finished/);
+  assert.match(text, /Result: there in 2 of 6, thin in 0, missing in 4/);
+  assert.match(text, /Said "I" 12 times and "we" 30 times/);
+  assert.match(text, /5 too long/);
+  assert.match(text, /Ownership: strong \(8\.2\/10\)/);
+  assert.match(text, /No story yet for: .*Accountability/);
+});
+
+check("a drill with no ideal points falls back to the model's own score", () => {
+  const s = buildDrillScore(DRILL_ANSWER, [], [], null, 7.5);
+  assert.equal(s.fellBack, true);
+  assert.equal(s.final, 7.5);
+  assert.equal(buildDrillScore(DRILL_ANSWER, [], [], null, "high").final, 0, "a non-number scores nothing");
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);
