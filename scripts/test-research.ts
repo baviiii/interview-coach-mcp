@@ -303,6 +303,7 @@ check("withMarket scopes every model call", () => {
   void scoped.infer({ task: "t", system: "You are a coach.", messages: [] });
   assert.match(seen!.system, /^You are a coach\.\n\nMARKET: Australia\./);
   assert.match(seen!.system, /states, territories/);
+  assert.match(seen!.system, /CAREER CHANGES ARE NORMAL\. .*Never refuse/, "a career changer still gets their questions");
   assert.equal(scoped.ragSearch, undefined, "no RAG on the inner provider ⇒ none on the wrapper");
 });
 
@@ -649,6 +650,11 @@ check("prompts follow the round type", () => {
   assert.match(screenPrompt.system, /plus super/);
   assert.ok(!screenPrompt.system.includes('"Tell me about yourself"'), "the opener is the test in a screen");
   assert.match(screenPrompt.user, /type=salary/);
+
+  // The fast model stops after the first section it writes, so the questions
+  // must come first: with "analysis" first, it returned no questions at all.
+  const order = screenPrompt.system.slice(screenPrompt.system.indexOf("Return ONLY JSON"));
+  assert.ok(order.indexOf('"questions"') >= 0 && order.indexOf('"questions"') < order.indexOf('"analysis"'), "questions before analysis");
 
   const behaviouralPrompt = generateQuestionsPrompt({ blueprint: interviewBlueprint({ field: "Payroll Officer", roundType: "behavioral" }) });
   assert.match(behaviouralPrompt.system, /never a hypothetical/);

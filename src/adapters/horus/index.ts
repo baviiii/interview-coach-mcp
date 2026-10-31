@@ -47,12 +47,23 @@ export function getModelProvider(): ModelProvider {
 }
 
 /**
- * Scopes every model call to the learner's job market. Applied here, once,
- * rather than in each prompt, so no prompt — present or future — can forget it
- * and quietly fall back to the model's default country.
+ * Notes every model call carries, applied here once rather than in each
+ * prompt, so no prompt — present or future — can forget them:
+ *
+ *   - the learner's job market, so the model doesn't fall back to its
+ *     default country;
+ *   - that career changes are normal. A learner whose history is in one
+ *     field and who is preparing for another is the usual case for a coach,
+ *     but the fast model (Claude Haiku 4.5, which the Free plan uses) treats
+ *     the mismatch as an error: seen 2026-11-01, it answered an electrician
+ *     round for a backend engineer with {"error": "CRITICAL MISMATCH — cannot
+ *     proceed"} instead of questions, and the learner saw "No questions were
+ *     returned".
  */
 export function withMarket(provider: ModelProvider, market: string): ModelProvider {
-  const note = `\n\nMARKET: ${market}. The learner is working or job-hunting in ${market}. Use ${market}'s credentials, regulators and licensing bodies, qualification framework, employers, terminology, spelling and hiring norms — never another country's by default. Where a requirement differs between states, territories or regions within ${market}, say so instead of picking one. Quote costs in ${market}'s currency when you state them.`;
+  const note =
+    `\n\nMARKET: ${market}. The learner is working or job-hunting in ${market}. Use ${market}'s credentials, regulators and licensing bodies, qualification framework, employers, terminology, spelling and hiring norms — never another country's by default. Where a requirement differs between states, territories or regions within ${market}, say so instead of picking one. Quote costs in ${market}'s currency when you state them.` +
+    `\n\nCAREER CHANGES ARE NORMAL. The learner's history may be in a different field from the job they are preparing for. Never refuse, never stop to ask for clarification, and never return an error in place of the JSON you were asked for: do the task for the job they are preparing for, drawing on whatever in their history transfers.`;
   return {
     infer: <T>(req: InferRequest) => provider.infer<T>({ ...req, system: `${req.system}${note}` }),
     ragSearch: provider.ragSearch?.bind(provider),

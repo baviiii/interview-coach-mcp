@@ -310,9 +310,8 @@ ROLE CALIBRATION — ${bp.field} (${bp.seniority}):
 QUESTION FORMATS IN THIS LOOP:
 ${formatLines}
 
-Return ONLY JSON:
+Return ONLY JSON, with "questions" first:
 {
-  "analysis": { "roleUnderstanding": string, "keyCompetencies": string[] },
   "questions": [{
     "id": number, "question": string,
     "stage": "${stages.join("|")}",
@@ -322,7 +321,8 @@ Return ONLY JSON:
     "whyThisQuestion": "one sentence, addressed to the candidate, on why THEY are being asked this — cite the specific thing about them that prompted it",
     "followUps": ["two probes you would push with if the answer stays shallow"],
     "signalsSought": ["what a strong answer proves"]
-  }]
+  }],
+  "analysis": { "roleUnderstanding": string, "keyCompetencies": string[] }
 }`;
 
   const user = `Run the loop below. Produce EXACTLY ${bp.slots.length} questions, one per slot, in this order, keeping each slot's id, stage, type, difficulty and minutes exactly as specified.
@@ -862,7 +862,11 @@ Return ONLY JSON:
   "interviewCadence": { "mocksPerWeek": number, "focusRotation": ["what each mock emphasizes, rotating"] },
   "weeklyRhythm": [{ "day": string, "block": string, "minutes": number }],
   "riskFactors": [{ "risk": string, "mitigation": string }]
-}`;
+}
+
+Keep it tight — the whole answer must fit in a short reply, or it is cut off and lost:
+- at most 3 skill targets and 4 actions per phase; at most 3 certifications, 5 rhythm blocks and 3 risks;
+- every string one plain sentence of 25 words or fewer.`;
 
   const user = `${careerContextBlock(args.ctx)}
 
