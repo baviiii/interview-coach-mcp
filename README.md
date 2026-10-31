@@ -220,14 +220,9 @@ The thing that makes this work for **any** field. Before a tool generates, it as
 
 Tools wired to research: `generate_contextual_questions`, `start_interview_session`, `next_question`, `finish_interview`, `build_interview_plan`, `get_proven_tips`, `find_proven_resources`, `rank_learning_resources`, `get_learning_pathway`, `recommend_certifications`, `analyze_certifications`, `career_guidance`, `build_career_roadmap`, `build_study_plan`. Each surfaces its real sources in `_meta.research`.
 
-**The Reddit caveat (important):** Reddit's anonymous `search.json` is now commonly **403-blocked from datacenter IPs** (any User-Agent). Wikipedia + Hacker News work everywhere with zero config. To make Reddit reliable, add **free** app credentials (no cost — just register at `reddit.com/prefs/apps`):
+**The Reddit caveat (important):** Reddit's anonymous `search.json` is **403-blocked from datacenter IPs** (any User-Agent), which is where this server runs. App credentials (`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`) still switch research to Reddit's app-only OAuth endpoint, **but they can no longer be had for free in minutes**: since late 2025 Reddit's Responsible Builder Policy requires a manual application for API access (reported as 2–4 weeks), and new requests for public access were reported to stop on 2026-10-31. Wikipedia + Hacker News work everywhere with zero config.
 
-```bash
-REDDIT_CLIENT_ID=...      # free "script"/"web app"
-REDDIT_CLIENT_SECRET=...
-```
-
-With those set, research uses Reddit's app-only OAuth endpoint instead. Everything stays $0.
+So for most jobs outside tech, research finds little to cite. Then `find_proven_resources` falls back to the coach's own suggestions, flagged `unsourced` (`_meta.unsourced`), each with a web-search link rather than an invented one, and tips stay `unverified`. A paid search API (Tavily, Exa, Brave) behind `ResearchPort` is the route to real links for every job.
 
 It's **best-effort**: a blocked/slow source is dropped, `_meta.research.partial` flags it, and the tool still produces output from whatever real signals it did get (or its pre-research behavior if none).
 
@@ -283,7 +278,7 @@ This is what **really** talks to the outside world today — not what's on a roa
 | **AI gateway** (`HORUS_MODE=gateway`) | ✅ Yes | All LLM generation (e.g. Gemini via Lovable gateway) | `MODEL_GATEWAY_KEY` |
 | **Hacker News** (`hn.algolia.com`) | ✅ Yes | **Research** (questions/resources, any field) + proof links — **software and IT jobs only** (the field profile's interview formats include `coding` or `system_design`; a nurse's interviews are technical but clinical); for other jobs its links are skipped and tips cite the researched post they answer | No |
 | **Wikipedia** (Action API) | ✅ Yes | **Research** — role facts + the credentials/licenses a field expects | No |
-| **Reddit** (`reddit.com`) | ✅ Yes | **Research** ("users who had issues") + proof. Anonymous often 403s → set free `REDDIT_CLIENT_ID/SECRET` for app-only OAuth | No (free creds recommended) |
+| **Reddit** (`reddit.com`) | ⚠️ Mostly not | **Research** ("users who had issues") + proof. Anonymous is 403'd from datacenter IPs; app credentials need Reddit's manual approval now (see the Reddit caveat) | Approved app credentials |
 | **Horus RAG** (`ragSearch`) | ✅ When provided | **Now called by research** (`HorusRagResearchSource`) — your curated corpus, if the provider implements `ragSearch` | Horus |
 | **Horus graph** (`graphQuery`) | ❌ Adapter only | Still not used by tools | Horus |
 | **HTTP grounding bridge** (`GROUNDING_MODE=http`) | ❌ You deploy it | Expected to front Reddit + web search + RAG — **not included in this repo** | Optional |
@@ -492,7 +487,7 @@ src/
 ## Known limitations (honest)
 
 - **Career-agnostic now, but quality scales with the sources** — research grounds any field, but output is only as rich as what Reddit/HN/Wikipedia return for it. Thin niches get thinner grounding.
-- **Reddit anonymous is often 403'd** — set free `REDDIT_CLIENT_ID/SECRET` for reliable Reddit research; otherwise it leans on Wikipedia + HN. See [Live research](#live-research-grounded-before-generating).
+- **Reddit is effectively unavailable** — anonymous access is 403'd from datacenter IPs and app credentials now need Reddit's manual approval, so research leans on Wikipedia + HN, and resources for non-tech jobs fall back to labelled coach suggestions. See [Live research](#live-research-grounded-before-generating).
 - **No paid web search yet** — Exa/Tavily would broaden coverage (courses, salary, niche credentials) behind the same `ResearchPort` seam, but aren't wired (kept $0 by choice).
 - **Horus `/infer`** — not available; use `HORUS_MODE=gateway` for real generation.
 - **HTTP grounding bridge** — not shipped; compose Reddit + search + RAG yourself if you want it.
@@ -500,7 +495,7 @@ src/
 - **DB failures are best-effort but no longer silent** — failed writes log a `[persist]` warning and `_meta.persisted` reflects the truth; the response itself still succeeds by design.
 - **Rate limit is single-instance** — the in-memory limiter guards one process; put a shared limiter in front if you scale out.
 - **Voice** is spoken answers only (dictation with delivery stats); a fully spoken interviewer is not built. **Calendar export** — not built.
-- **CareerCraft's `infer` function fails under parallel long calls** — seen 2026-10-30: three answer evaluations sent at once, two came back `503 BOOT_ERROR` ("Function failed to start") after ~10s while one succeeded; single calls and short parallel calls are fine. Realistic mode overlaps a background evaluation with the next question, so live sessions can hit it. `score-check` runs its repeats one at a time for this reason. The fix belongs in that function (or Horus), not here.
+- **CareerCraft's `infer` function can't start workers for bursts of long calls** — each model call holds a Supabase Edge Function worker for its whole duration, and when several arrive together while it's cold, the platform fails to start the extra workers: `503 BOOT_ERROR` ("Function failed to start") after ~10 s. The function's own code boots in ~45 ms; this is the platform (logs on 2026-10-31 showed one worker booted and none for the refused calls). Because a BOOT_ERROR means the call never ran, `HttpHorusClient` retries it (twice, after ~1 s and ~3 s); nothing else is retried. Checked live: three parallel long calls all succeed, two after one retry each. A bigger burst can still run out of retries; moving long model calls off Supabase Edge Functions (keeping the plan quotas) is the structural fix.
 
 ---
 
@@ -513,8 +508,8 @@ docker run -p 8787:8787 --env-file .env -e NODE_ENV=production interview-coach-m
 
 Or point any Node host (Railway, Render, Fly) at `npm start` — no build step needed.
 In production set `NODE_ENV=production` (enforces the auth guard), a real
-`CORS_ORIGIN`, and the free `REDDIT_CLIENT_ID/SECRET` (datacenter IPs can't use
-anonymous Reddit — without creds your best research source silently drops out).
+`CORS_ORIGIN`, and `REDDIT_CLIENT_ID/SECRET` if you have Reddit-approved app
+credentials (datacenter IPs can't use anonymous Reddit).
 
 CI (`.github/workflows/ci.yml`) runs typecheck + unit tests + the offline e2e
 golden path on every push.
