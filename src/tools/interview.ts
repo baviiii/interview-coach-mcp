@@ -597,7 +597,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         task: "interview.next_question",
         system,
         messages: [{ role: "user", content: user }],
-        model: "fast",
+        // The interviewer's next question is the interview itself, so it gets
+        // the deep model like the opening questions, the scoring and the debrief.
+        model: "deep",
         temperature: 0.9,
         userRef: auth.userId,
 
