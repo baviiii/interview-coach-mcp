@@ -169,7 +169,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         framework: args.framework,
         frameworkLevel: args.frameworkLevel,
       });
-      const { system, user } = generateQuestionsPrompt({
+      const { system, user, schema } = generateQuestionsPrompt({
         blueprint,
         jobDescription: args.jobDescription,
         focusAreas: args.focusAreas,
@@ -180,6 +180,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         task: "interview.generate_questions",
         system,
         messages: [{ role: "user", content: user }],
+        schema,
+        schemaName: "InterviewQuestions",
+        expect: ["questions"],
         model: "deep",
         // Higher temperature: the complaint is sameness, and the blueprint —
         // not the sampler — is what keeps the structure honest.
@@ -300,7 +303,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         firstCompetency: args.competency,
       });
       const blueprint = { ...fullPlan, slots: fullPlan.slots.slice(0, generateNow) };
-      const { system, user } = generateQuestionsPrompt({
+      const { system, user, schema } = generateQuestionsPrompt({
         blueprint,
         jobDescription: args.jobDescription,
         focusAreas: args.focusAreas,
@@ -311,6 +314,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         task: "interview.generate_questions",
         system,
         messages: [{ role: "user", content: user }],
+        schema,
+        schemaName: "InterviewQuestions",
+        expect: ["questions"],
         model: "deep",
         temperature: 0.9,
         userRef: auth.userId,
@@ -383,7 +389,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         : undefined;
       const attempt = args.attempt ?? 1;
 
-      const { system, user } = evaluateAnswerPrompt({
+      const { system, user, schema } = evaluateAnswerPrompt({
         field: args.field,
         seniority: args.seniority,
         question: args.questionText,
@@ -408,6 +414,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         task: "interview.evaluate_answer",
         system,
         messages: [{ role: "user", content: user }],
+        schema,
+        schemaName: "AnswerEvaluation",
+        expect: ["scoreBreakdown"],
         model: "deep",
         // Scoring must be stable across runs — variety belongs in generation.
         temperature: 0.2,
@@ -577,7 +586,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
       const slot: QuestionSlot | undefined = blueprint.slots[Math.min(position, blueprint.slots.length - 1)];
 
       const last = transcript[transcript.length - 1];
-      const { system, user } = nextQuestionPrompt({
+      const { system, user, schema } = nextQuestionPrompt({
         field: args.field,
         seniority: args.seniority,
         difficulty,
@@ -597,6 +606,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         task: "interview.next_question",
         system,
         messages: [{ role: "user", content: user }],
+        schema,
+        schemaName: "NextQuestion",
+        expect: ["question"],
         // The interviewer's next question is the interview itself, so it gets
         // the deep model like the opening questions, the scoring and the debrief.
         model: "deep",
@@ -675,7 +687,7 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         .map((c) => c.label)
         .filter((label) => !tested.has(label));
 
-      const { system, user } = finalEvaluationPrompt({
+      const { system, user, schema } = finalEvaluationPrompt({
         field: args.field,
         seniority: args.seniority,
         transcript: labelled,
@@ -690,6 +702,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         task: "interview.final_evaluation",
         system,
         messages: [{ role: "user", content: user }],
+        schema,
+        schemaName: "InterviewDebrief",
+        expect: ["overallScore", "executiveSummary"],
         model: "deep",
         temperature: 0.2,
         userRef: auth.userId,

@@ -1,10 +1,12 @@
 import { config } from "../../config.js";
+import { withAnswerCheck } from "./answer-check.js";
 import { GatewayModelProvider } from "./gateway-client.js";
 import { HttpHorusClient } from "./http-client.js";
 import { MockHorusClient } from "./mock-client.js";
 import type { InferRequest, ModelProvider } from "./port.js";
 
 export * from "./port.js";
+export { answerProblem, withAnswerCheck } from "./answer-check.js";
 
 let singleton: ModelProvider | null = null;
 
@@ -42,7 +44,8 @@ export function getModelProvider(): ModelProvider {
   } else {
     singleton = new MockHorusClient();
   }
-  singleton = withMarket(singleton, config.market);
+  // Every answer is checked, and an unusable one asked for again (answer-check.ts).
+  singleton = withAnswerCheck(withMarket(singleton, config.market));
   return singleton;
 }
 

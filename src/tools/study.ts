@@ -244,6 +244,7 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
         });
         const res = await horus.infer<DrillEvaluationData>({
           task: "study.evaluate_drill",
+          expect: ["points"],
           system,
           messages: [{ role: "user", content: user }],
           model: "deep",

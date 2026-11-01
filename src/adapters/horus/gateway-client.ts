@@ -1,4 +1,4 @@
-import { UpstreamError } from "../../errors.js";
+import { UnreadableAnswerError, UpstreamError } from "../../errors.js";
 import type {
   InferRequest,
   InferResult,
@@ -103,8 +103,12 @@ function parseJson<T>(raw: string): T {
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
     if (start >= 0 && end > start) {
-      return JSON.parse(cleaned.slice(start, end + 1)) as T;
+      try {
+        return JSON.parse(cleaned.slice(start, end + 1)) as T;
+      } catch {
+        // Falls through: a cut-off answer is unreadable, not a crash.
+      }
     }
-    throw new UpstreamError("Gateway returned non-JSON content");
+    throw new UnreadableAnswerError("Gateway returned non-JSON content");
   }
 }

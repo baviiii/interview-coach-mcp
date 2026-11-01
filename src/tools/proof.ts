@@ -56,6 +56,7 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
 
       const draft = await horus.infer<{ tips?: unknown[] }>({
         task: "proof.draft_tips",
+        expect: ["tips"],
         system,
         messages: [{ role: "user", content: user }],
         model: "fast",
@@ -192,6 +193,7 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
             resources?: Array<{ title?: string; type?: string; whyRecommended?: string; howToFind?: string }>;
           }>({
             task: "study.suggest_resources",
+            expect: ["resources"],
             system,
             messages: [{ role: "user", content: user }],
             model: "fast",

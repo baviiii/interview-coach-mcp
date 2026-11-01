@@ -61,6 +61,7 @@ export function registerSelectionTools(server: McpServer, deps: ToolDeps): void 
         tips?: unknown;
       }>({
         task: "interview.selection_criterion",
+        expect: ["draft"],
         system,
         messages: [{ role: "user", content: user }],
         model: "deep",

@@ -27,6 +27,11 @@ export interface InferRequest {
   /** JSON Schema the response must satisfy. Provider enforces; we still validate. */
   schema?: Record<string, unknown>;
   schemaName?: string;
+  /**
+   * Top-level fields the tool can't work without. An answer missing one, or
+   * with it empty, is asked for once more (see withAnswerCheck).
+   */
+  expect?: string[];
   model?: "fast" | "deep";
   temperature?: number;
   maxTokens?: number;

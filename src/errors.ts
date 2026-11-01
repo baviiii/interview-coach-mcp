@@ -32,6 +32,12 @@ export class UpstreamError extends AppError {
 }
 
 /**
+ * The model answered, but not with JSON we can read. Unlike other upstream
+ * failures this one is worth asking again (see withAnswerCheck).
+ */
+export class UnreadableAnswerError extends UpstreamError {}
+
+/**
  * The user's plan allowance is spent.
  *
  * Kept separate from UpstreamError because it is not an outage: the upstream

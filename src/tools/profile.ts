@@ -106,6 +106,7 @@ export function registerProfileTools(server: McpServer, deps: ToolDeps): void {
       const { system, user } = personaSynthesisPrompt({ ctx, onboarding, certFacts: certFactsBlock(ctx) });
       const res = await horus.infer<{ persona?: Record<string, unknown>; confidence?: number; basedOn?: string[] }>({
         task: "profile.synthesize_persona",
+        expect: ["persona"],
         system,
         messages: [
           {

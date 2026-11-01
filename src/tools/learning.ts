@@ -130,6 +130,7 @@ async function rankResources(
       resources?: Array<{ title?: string; type?: string; whyRecommended?: string; priority?: number; howToFind?: string }>;
     }>({
       task: "study.suggest_resources",
+      expect: ["resources"],
       system,
       messages: [{ role: "user", content: user }],
       model: "fast",
@@ -156,6 +157,7 @@ async function rankResources(
     const { system, user } = rankResourcesPrompt({ goal: args.goal, skills, candidates, ctx });
     const res = await horus.infer<{ ranked?: typeof ranked }>({
       task: "study.rank_resources",
+      expect: ["ranked"],
       system,
       messages: [{ role: "user", content: user }],
       model: "fast",

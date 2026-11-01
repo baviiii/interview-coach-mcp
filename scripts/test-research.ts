@@ -11,6 +11,8 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
+import { answerProblem, withAnswerCheck } from "../src/adapters/horus/answer-check.js";
+import { QuotaError, UnreadableAnswerError } from "../src/errors.js";
 import { skillLevel } from "../src/context/assemble.js";
 import { nextLevel, normalizeSkillCategory } from "../src/context/persist.js";
 import { creditsSkill, finishedUrls, normaliseUrl, statusFor } from "../src/context/resources.js";
@@ -52,6 +54,7 @@ import {
   fieldProfilePrompt,
   finalEvaluationPrompt,
   generateQuestionsPrompt,
+  nextQuestionPrompt,
   realWorldBlock,
   selectionCriterionPrompt,
 } from "../src/domain/prompts.js";
@@ -1092,6 +1095,82 @@ await checkAsync("the knowledge index runs only when asked, as the learner, once
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+check("an answer is unusable when it isn't an object, is an error, or lacks a field the tool needs", () => {
+  assert.equal(answerProblem({ questions: [{ id: 1 }] }, ["questions"]), null);
+  assert.equal(answerProblem({ anything: 1 }), null, "no fields named, any real object will do");
+  assert.match(answerProblem({ analysis: {} }, ["questions"]) ?? "", /missing "questions"/);
+  assert.match(answerProblem({ questions: [] }, ["questions"]) ?? "", /missing/, "an empty list is missing");
+  assert.match(answerProblem({ question: "  " }, ["question"]) ?? "", /missing/, "a blank string is missing");
+  assert.equal(answerProblem({ overallScore: 0, executiveSummary: "x" }, ["overallScore", "executiveSummary"]), null, "a score of 0 is an answer");
+  assert.match(answerProblem({ error: "CRITICAL MISMATCH — cannot proceed" }) ?? "", /gave an error/);
+  assert.match(answerProblem([1, 2]) ?? "", /not a JSON object/);
+  assert.match(answerProblem({}) ?? "", /empty/);
+});
+
+await checkAsync("an unusable answer is asked for once more, saying what was wrong; other failures aren't", async () => {
+  const fake = (answers: Array<unknown>) => {
+    const seen: InferRequest[] = [];
+    const provider: ModelProvider = {
+      infer: async <T>(req: InferRequest) => {
+        seen.push(req);
+        const next = answers[seen.length - 1];
+        if (next instanceof Error) throw next;
+        return { data: next as T, raw: "", model: "m", cached: false, usage: { inputTokens: 10, outputTokens: 5 } };
+      },
+    };
+    return { checked: withAnswerCheck(provider), seen };
+  };
+  const req: InferRequest = { task: "interview.generate_questions", system: "SYS", messages: [], expect: ["questions"] };
+
+  let f = fake([{ questions: [{ id: 1 }] }]);
+  await f.checked.infer(req);
+  assert.equal(f.seen.length, 1, "a good answer is used as it is");
+
+  f = fake([{ analysis: { roleUnderstanding: "x" } }, { questions: [{ id: 1 }] }]);
+  const fixed = await f.checked.infer<{ questions?: unknown[] }>(req);
+  assert.equal(f.seen.length, 2);
+  assert.match(f.seen[1]!.system, /^SYS\n\nYOUR PREVIOUS ANSWER .* missing "questions"/s, "the second ask says what was missing");
+  assert.equal(fixed.data.questions?.length, 1);
+  assert.deepEqual(fixed.usage, { inputTokens: 20, outputTokens: 10 }, "both calls' tokens are counted");
+
+  f = fake([new UnreadableAnswerError("Horus returned non-JSON content"), { questions: [{ id: 1 }] }]);
+  assert.equal((await f.checked.infer<{ questions?: unknown[] }>(req)).data.questions?.length, 1, "unreadable JSON is asked again");
+
+  f = fake([{ analysis: {} }, { analysis: {} }]);
+  assert.deepEqual((await f.checked.infer(req)).data, { analysis: {} }, "still unusable: the tool gets it and copes as before");
+  assert.equal(f.seen.length, 2, "never more than one retry");
+
+  f = fake([new QuotaError("Monthly limit reached")]);
+  await assert.rejects(f.checked.infer(req), QuotaError, "a spent allowance isn't retried");
+  assert.equal(f.seen.length, 1);
+});
+
+check("each interview call's answer shape names exactly the fields its prompt asks for", () => {
+  const topKeys = (schema: unknown) => Object.keys((schema as { properties: Record<string, unknown> }).properties);
+  const asked = (system: string, key: string) => system.slice(system.indexOf("Return ONLY JSON")).includes(`"${key}"`);
+  const pairs = [
+    generateQuestionsPrompt({ blueprint: interviewBlueprint({ field: "Payroll Officer", questionCount: 4, roundType: "screen" }) }),
+    nextQuestionPrompt({ field: "Nurse", difficulty: "medium", covered: [] }),
+    evaluateAnswerPrompt({ field: "x", question: "q", questionType: "behavioral", answer: "a" }),
+    evaluateAnswerPrompt({ field: "x", question: "q", questionType: "technical", answer: "a" }),
+    ...(["behavioral", "screen", "technical", "full"] as const).map((roundType) =>
+      finalEvaluationPrompt({ field: "x", transcript: [], roundType }),
+    ),
+  ];
+  for (const p of pairs) {
+    assert.ok(p.schema, "the prompt returns its shape");
+    for (const key of topKeys(p.schema)) assert.ok(asked(p.system, key), `"${key}" is in the shape and asked for in the prompt`);
+  }
+  assert.deepEqual(topKeys(pairs[0]!.schema).slice(0, 1), ["questions"], "questions come first");
+  assert.ok(topKeys(pairs[2]!.schema).includes("starBreakdown") && topKeys(pairs[2]!.schema).includes("competency"));
+  assert.ok(!topKeys(pairs[3]!.schema).includes("starBreakdown"), "only story questions get the STAR read");
+  const named = evaluateAnswerPrompt({
+    field: "x", question: "q", questionType: "behavioral", answer: "a",
+    competency: { key: "teamwork", label: "Teamwork" },
+  } as Parameters<typeof evaluateAnswerPrompt>[0]);
+  assert.ok(!topKeys(named.schema).includes("competency"), "a slot that names its competency doesn't ask for one");
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

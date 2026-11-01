@@ -16,6 +16,7 @@ import {
   type RoundType,
 } from "./interview-loop.js";
 import { rubricFor, weightsText } from "./scoring.js";
+import { debriefShape, evaluationShape, nextQuestionShape, questionsShape, type JsonSchema } from "./answer-shapes.js";
 import type { LearnerContext } from "../types.js";
 
 function contextBlock(ctx?: LearnerContext): string {
@@ -257,6 +258,8 @@ function hasResearch(research?: FieldResearch): boolean {
 export interface PromptPair {
   system: string;
   user: string;
+  /** The exact JSON the answer must be, for the calls that send one (answer-shapes.ts). */
+  schema?: JsonSchema;
 }
 
 /**
@@ -338,7 +341,7 @@ Where a slot names a skill to probe, the question must genuinely test it — bia
     hasResearch(args.research) ? ", and mirror the real-world signals above (how this field actually interviews)" : ""
   }.`;
 
-  return { system, user };
+  return { system, user, schema: questionsShape() };
 }
 
 /** One adaptive follow-on question mid-session. */
@@ -389,7 +392,7 @@ ${args.slot ? `THIS SLOT SCREENS FOR: ${args.slot.intent}\n` : ""}${args.focusSk
   }${interviewLearnerBlock(args.ctx)}
 ${avoidBlock(args.ctx, args.covered)}${realWorldBlock(args.research, { only: ["question", "experience"] })}`;
 
-  return { system, user };
+  return { system, user, schema: nextQuestionShape() };
 }
 
 /**
@@ -503,7 +506,7 @@ ${lengthLine(args.length)}${
       : ""
   }${earlier ? `\nEARLIER IN THIS SESSION (for pattern-spotting — do not re-coach what they already fixed):\n${earlier}\n` : ""}${contextBlock(args.ctx)}`;
 
-  return { system, user };
+  return { system, user, schema: evaluationShape({ star: Boolean(rubric.star), askCompetency: !args.competency }) };
 }
 
 /** m:ss, for spoken durations in prompts. */
@@ -633,7 +636,7 @@ ${qa}${interviewLearnerBlock(args.ctx)}
 ${realWorldBlock(args.research, { only: ["experience", "question"] })}
 "nextSessionFocus" feeds their study plan directly — make it specific enough to act on tomorrow.`;
 
-  return { system, user };
+  return { system, user, schema: debriefShape(args.roundType ?? "full") };
 }
 
 /**
