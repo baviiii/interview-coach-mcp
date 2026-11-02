@@ -1,7 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { ResearchSnippet } from "../adapters/research/port.js";
-import { config } from "../config.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { resolveFieldProfile } from "../context/field-profile.js";
 import { finishedUrls, normaliseUrl, statusFor } from "../context/resources.js";
@@ -9,6 +8,10 @@ import { suggestResourcesPrompt } from "../domain/prompts.js";
 import * as S from "../schemas.js";
 import { groundingFits, ok, proofFromSnippet, researchMeta, researchSafely } from "./_util.js";
 import type { ToolDeps } from "./interview.js";
+import { withCheckedLinks, type LinkKind } from "./suggested-links.js";
+
+// Kept here too: callers and tests import it from proof.js.
+export { searchUrl } from "./suggested-links.js";
 
 /**
  * proof.* — the grounding layer. Every tip/resource it returns carries a real,
@@ -177,12 +180,12 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
       // Nothing real found for this job. Common outside tech: Reddit's API is
       // closed to new apps, and Hacker News only fits software. Rather than an
       // empty page, the coach names what a practitioner would, from its own
-      // knowledge, labelled as such (unsourced) and with no invented links:
-      // each one's link is a web search for it.
+      // knowledge, labelled as such (unsourced). Each link opens: the page the
+      // coach named if it loads, otherwise a web search for it.
       let suggested: SuggestedResource[] = [];
       if (merged.length === 0) {
         try {
-          const { system, user } = suggestResourcesPrompt({
+          const { system, user, schema } = suggestResourcesPrompt({
             field: field ?? skills[0] ?? "their field",
             skills,
             goal: args.goal,
@@ -190,34 +193,38 @@ export function registerProofTools(server: McpServer, deps: ToolDeps): void {
             ctx,
           });
           const res = await horus.infer<{
-            resources?: Array<{ title?: string; type?: string; whyRecommended?: string; howToFind?: string }>;
+            resources?: Array<{ title?: string; type?: string; whyRecommended?: string; howToFind?: string; url?: unknown; search?: unknown }>;
           }>({
             task: "study.suggest_resources",
             expect: ["resources"],
+            schema,
+            schemaName: "ResourceSuggestions",
             system,
             messages: [{ role: "user", content: user }],
             model: "fast",
             userRef: auth.userId,
             userToken: auth.jwt,
           });
-          suggested = (Array.isArray(res.data.resources) ? res.data.resources : [])
+          const named = (Array.isArray(res.data.resources) ? res.data.resources : [])
             .filter((r) => typeof r.title === "string" && r.title.trim())
+            .slice(0, max)
+            .map((r) => ({ ...r, title: r.title!.trim() }));
+          suggested = (await withCheckedLinks(named, field))
             .map((r) => {
-              const url = searchUrl(r.title!.trim(), field);
-              const myStatus = statusFor(ctx.resources, url);
+              const myStatus = statusFor(ctx.resources, r.url);
               return {
-                title: r.title!.trim(),
+                title: r.title,
                 provider: r.howToFind?.trim() || "Suggested by the coach",
                 type: r.type ?? "reading",
-                url,
+                url: r.url,
+                linkKind: r.linkKind,
                 why: r.whyRecommended ?? "",
                 proof: null,
                 unsourced: true as const,
                 ...(myStatus ? { myStatus } : {}),
               };
             })
-            .filter((r) => !done.has(normaliseUrl(r.url)!))
-            .slice(0, max);
+            .filter((r) => !done.has(normaliseUrl(r.url)!));
         } catch {
           /* best-effort — an empty list is still an honest answer */
         }
@@ -252,20 +259,11 @@ interface SuggestedResource {
   /** How to find it, in the coach's words. */
   provider: string;
   type: string;
-  /** A web search for it: the coach never invents a link. */
+  /** The page the coach named, once it's been opened; otherwise a web search for it. */
   url: string;
+  linkKind: LinkKind;
   why: string;
   proof: null;
   unsourced: true;
   myStatus?: string;
-}
-
-/**
- * A web search for a suggested resource, scoped to the job and the market, so
- * "Australian Medicines Handbook" finds the real thing in one click. Stable for
- * the same title and job, so it can be saved and marked done like any link.
- */
-export function searchUrl(title: string, field?: string | null): string {
-  const q = [title, field, config.market].filter(Boolean).join(" ");
-  return `https://duckduckgo.com/?q=${encodeURIComponent(q)}`;
 }

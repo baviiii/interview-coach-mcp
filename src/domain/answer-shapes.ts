@@ -99,6 +99,32 @@ export function evaluationShape(opts: { star: boolean; askCompetency: boolean })
   );
 }
 
+/** suggestResourcesPrompt: the coach's own picks, and (Australia) which skills call for accredited training. */
+export function suggestionsShape(opts: { accreditedTraining: boolean }): JsonSchema {
+  return obj(
+    {
+      resources: list(
+        obj(
+          {
+            title: str(),
+            type: str("practice|reading|project|course|community"),
+            forSkill: str(),
+            whyRecommended: str(),
+            priority: num(),
+            howToFind: str(),
+            url: nullable(str("the exact page, only when sure it exists")),
+            search: str("3-7 words to search the web for it"),
+          },
+          ["forSkill", "priority", "howToFind"],
+        ),
+      ),
+      ...(opts.accreditedTraining && {
+        accreditedTraining: list(obj({ skill: str(), searchTerm: str() })),
+      }),
+    },
+  );
+}
+
 /** finalEvaluationPrompt. Each round type adds its own section (see debriefFraming). */
 export function debriefShape(roundType: string): JsonSchema {
   const extra: Record<string, JsonSchema> =

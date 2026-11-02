@@ -57,6 +57,7 @@ import {
   nextQuestionPrompt,
   realWorldBlock,
   selectionCriterionPrompt,
+  suggestResourcesPrompt,
 } from "../src/domain/prompts.js";
 import {
   buildDrillScore,
@@ -72,10 +73,13 @@ import { latestPerQuestion, sameQuestion } from "../src/tools/interview.js";
 import { canonicalField, resolveFieldProfile } from "../src/context/field-profile.js";
 import { deriveSkillTargets } from "../src/domain/targets.js";
 import { withMarket, type InferRequest, type ModelProvider } from "../src/adapters/horus/index.js";
-import { MAX_ATTEMPTS, retryDelay } from "../src/adapters/horus/http-client.js";
+import { MAX_ATTEMPTS, retryDelay, unreadableUpstream } from "../src/adapters/horus/http-client.js";
 import { searchUrl } from "../src/tools/proof.js";
+import { officialTrainingLinks, withCheckedLinks } from "../src/tools/suggested-links.js";
+import { plausibleHost, privateAddress } from "../src/adapters/research/link-check.js";
 import {
   KnowledgeIndexResearchSource,
+  openableUrl,
   knowledgeKind,
   knowledgeQuery,
   MIN_RELEVANCE,
@@ -1171,6 +1175,108 @@ check("each interview call's answer shape names exactly the fields its prompt as
     competency: { key: "teamwork", label: "Teamwork" },
   } as Parameters<typeof evaluateAnswerPrompt>[0]);
   assert.ok(!topKeys(named.schema).includes("competency"), "a slot that names its competency doesn't ask for one");
+});
+
+check("the link check never opens a private, internal or non-https address", () => {
+  for (const ip of ["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1", "224.0.0.1"]) {
+    assert.ok(privateAddress(ip), `${ip} is private`);
+  }
+  for (const ip of ["1.1.1.1", "142.250.70.78", "2606:4700::1111"]) assert.ok(!privateAddress(ip), `${ip} is public`);
+  assert.ok(plausibleHost("www.ahpra.gov.au"));
+  for (const host of ["localhost", "127.0.0.1", "intranet", "printer.local", "db.internal", "[::1]"]) {
+    assert.ok(!plausibleHost(host), `${host} is refused before DNS`);
+  }
+});
+
+await checkAsync("a coach-named page is linked only when it opens; otherwise it's a search for the title", async () => {
+  const opened: string[] = [];
+  const opens = async (url: string) => {
+    opened.push(url);
+    return url.includes("real");
+  };
+  const out = await withCheckedLinks(
+    [
+      { title: "NMBA standards", url: "https://real.example.org/standards" },
+      { title: "Made-up guide", url: "https://gone.example.org/guide" },
+      { title: "No link given", url: null },
+    ],
+    "Registered Nurse",
+    opens,
+  );
+  assert.deepEqual(out.map((r) => r.linkKind), ["direct", "search", "search"]);
+  assert.equal(out[0]!.url, "https://real.example.org/standards");
+  assert.equal(out[1]!.url, searchUrl("Made-up guide", "Registered Nurse"), "a dead link becomes a search, not a dead link");
+  assert.equal(opened.length, 2, "nothing is opened when no link was named");
+});
+
+check("accredited training links: Australia only, the register and the course search, checked formats", () => {
+  const links = officialTrainingLinks(
+    [
+      { skill: "First aid", searchTerm: "first aid" },
+      { skill: "First aid again", searchTerm: "First Aid" },
+      { skill: "Forklift", searchTerm: "forklift" },
+      { skill: "", searchTerm: "nothing" },
+      { skill: "Bad", searchTerm: "x" },
+      "not an object",
+    ],
+    "Australia",
+  );
+  assert.deepEqual(links.map((l) => l.url), [
+    "https://training.gov.au/search?searchText=first%20aid",
+    "https://www.yourcareer.gov.au/learn-and-train/courses?q=first%20aid",
+    "https://training.gov.au/search?searchText=forklift",
+    "https://www.yourcareer.gov.au/learn-and-train/courses?q=forklift",
+  ]);
+  assert.ok(links.every((l) => l.linkKind === "official"));
+  assert.deepEqual(officialTrainingLinks([{ skill: "First aid", searchTerm: "first aid" }], "New Zealand"), [], "other markets get none");
+  assert.deepEqual(officialTrainingLinks(undefined, "Australia"), []);
+  const many = officialTrainingLinks(["a b c", "d e f", "g h i", "j k l"].map((t) => ({ skill: t, searchTerm: t })), "Australia");
+  assert.equal(many.length, 6, "at most three skills");
+});
+
+check("a knowledge-index document always gets a link that opens", () => {
+  assert.equal(openableUrl("https://www.jobsandskills.gov.au/report.pdf", "Report"), "https://www.jobsandskills.gov.au/report.pdf");
+  assert.equal(
+    decodeURIComponent(openableUrl("pdf:interview-preparation-guide.pdf", "Interview Preparation Guide").split("q=")[1]!),
+    "Interview Preparation Guide",
+  );
+  assert.equal(
+    decodeURIComponent(openableUrl("pdf:addressing-selection_criteria.pdf", "  ").split("q=")[1]!),
+    "addressing selection criteria",
+    "no title: the file name, tidied",
+  );
+});
+
+check("the suggestion prompt asks for accredited training only when told to, and for links it will check", () => {
+  const plain = suggestResourcesPrompt({ field: "Electrician", skills: ["Testing"], count: 3 });
+  assert.ok(!plain.system.includes("accreditedTraining"));
+  assert.match(plain.system, /"url": string \| null/);
+  const au = suggestResourcesPrompt({ field: "Electrician", skills: ["Testing"], count: 3, accreditedTraining: true });
+  assert.match(au.system, /"accreditedTraining"/);
+  assert.match(au.system, /Leave it empty/);
+});
+
+check("Horus failing to read the model's answer counts as an unreadable answer; other failures don't", () => {
+  assert.ok(unreadableUpstream(502, '{"error":"Horus 502: {\\"error\\":\\"No object generated: could not parse the response.\\"}"}'));
+  assert.ok(!unreadableUpstream(502, '{"error":"The model ran out of output tokens before finishing its answer."}'), "same budget, same failure");
+  assert.ok(!unreadableUpstream(429, "No object generated"), "a spent allowance is never an answer problem");
+  assert.ok(!unreadableUpstream(503, '{"code":"BOOT_ERROR"}'));
+});
+
+check("the coach's resource suggestions send their exact shape, accredited training only when asked", () => {
+  const keys = (schema: unknown) => Object.keys((schema as { properties: Record<string, unknown> }).properties);
+  const au = suggestResourcesPrompt({ field: "Electrician", skills: ["First aid"], count: 3, accreditedTraining: true });
+  assert.deepEqual(keys(au.schema), ["resources", "accreditedTraining"]);
+  assert.deepEqual(keys(suggestResourcesPrompt({ field: "x", skills: [], count: 3 }).schema), ["resources"]);
+});
+
+await checkAsync("a fallback search uses the coach's search phrase, not an instruction-like title", async () => {
+  const [item] = await withCheckedLinks(
+    [{ title: "Shadow a wound clinic in your workplace", url: null, search: "wound care education Australia nurses" }],
+    "Registered Nurse",
+    async () => false,
+  );
+  assert.equal(decodeURIComponent(item!.url.split("q=")[1]!), "wound care education Australia nurses", "the market isn't added twice");
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

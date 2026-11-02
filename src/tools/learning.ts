@@ -10,8 +10,9 @@ import { drillDifficulty, nextReviewInDays, pickDrillSkill } from "../domain/spa
 import { deriveSkillTargets } from "../domain/targets.js";
 import * as S from "../schemas.js";
 import type { LearnerContext } from "../types.js";
-import { degradation, err, ok, researchMeta, researchSafely, type Degradation } from "./_util.js";
+import { degradation, err, ok, researchMeta, researchSafely, techJob, type Degradation } from "./_util.js";
 import type { ToolDeps } from "./interview.js";
+import { officialTrainingLinks, withCheckedLinks, type LinkKind, type OfficialTrainingLink } from "./suggested-links.js";
 
 interface Candidate {
   id: string;
@@ -32,12 +33,16 @@ export interface RankedResource extends Candidate {
   forSkill?: string;
   /** The learner's own status, when they've saved or started it. */
   myStatus?: ResourceStatus;
+  /** For the coach's own suggestions: whether the link is the page it named (checked) or a search for it. */
+  linkKind?: LinkKind;
 }
 
 export interface ResourceResult {
   resources: RankedResource[];
-  /** True when nothing real backed these — model-suggested moves, no sources. */
+  /** True when nothing real backed these — the coach's own picks (each link still opens). */
   unsourced: boolean;
+  /** Where to find accredited training for the skills that call for it (Australia). */
+  officialTraining: OfficialTrainingLink[];
   research: FieldResearch;
   reasons: string[];
 }
@@ -62,7 +67,15 @@ function fieldFor(ctx: LearnerContext, explicit?: string): string {
 async function rankResources(
   deps: ToolDeps,
   ctx: LearnerContext,
-  args: { skills?: string[]; skillIds?: string[]; goal?: string; field?: string; maxResults?: number },
+  args: {
+    skills?: string[];
+    skillIds?: string[];
+    goal?: string;
+    field?: string;
+    maxResults?: number;
+    /** A software or IT job (from its field profile): only then are Hacker News links any use. */
+    technical?: boolean;
+  },
 ): Promise<ResourceResult> {
   const { auth, horus } = deps;
   const max = args.maxResults ?? 8;
@@ -95,16 +108,19 @@ async function rankResources(
   if (catalog.length === 0) reasons.push("no rows in learning_resources — falling back to researched material");
 
   // 2. What the field's community actually recommends (free, cited).
+  //
+  // Not the knowledge index: its documents are job reports, strategies and
+  // application guides — right for tips and interview prep, but nothing to
+  // learn a skill from. And Hacker News only for tech jobs: its search is
+  // "<job> interview", which for a nurse turns up unrelated tech stories.
   const research = await researchSafely(deps.research, {
     field,
     role: ctx.goal?.targetRole,
     intents: ["resource"],
     max: Math.max(max, 6),
-    // Australian career documents, searched as the learner (one search per job, shared).
-    knowledgeIndex: true,
-    userToken: auth.jwt,
   });
-  const community: Candidate[] = research.resources.map((s, i) => ({
+  const usable = research.resources.filter((s) => args.technical || s.sourceLabel !== "Hacker News");
+  const community: Candidate[] = usable.map((s, i) => ({
     id: `research:${i + 1}`,
     title: s.text.length > 120 ? `${s.text.slice(0, 119)}…` : s.text,
     type: "community",
@@ -122,15 +138,37 @@ async function rankResources(
     .filter((c) => !doneIds.has(c.id) && !(c.url && done.has(normaliseUrl(c.url)!)))
     .slice(0, Math.max(max, 8));
 
-  // 3. Nothing real to rank — say what to do anyway, clearly unsourced.
+  // 3. Nothing real to rank — the coach names what a practitioner would, and
+  // every one gets a link that opens: the page it named if that loads, else a
+  // web search for it. Plus where to find accredited training, for the skills
+  // that are normally learned that way.
   if (candidates.length === 0) {
-    reasons.push("no catalogue rows and no researched resources — returning unsourced suggestions");
-    const { system, user } = suggestResourcesPrompt({ field, skills, goal: args.goal, count: Math.min(max, 5), ctx });
+    reasons.push("no catalogue rows and no researched resources — returning the coach's own suggestions");
+    const { system, user, schema } = suggestResourcesPrompt({
+      field,
+      skills,
+      goal: args.goal,
+      count: Math.min(max, 5),
+      ctx,
+      accreditedTraining: true,
+    });
     const res = await horus.infer<{
-      resources?: Array<{ title?: string; type?: string; whyRecommended?: string; priority?: number; howToFind?: string }>;
+      resources?: Array<{
+        title?: string;
+        type?: string;
+        forSkill?: unknown;
+        whyRecommended?: string;
+        priority?: number;
+        howToFind?: string;
+        url?: unknown;
+        search?: unknown;
+      }>;
+      accreditedTraining?: unknown;
     }>({
       task: "study.suggest_resources",
       expect: ["resources"],
+      schema,
+      schemaName: "ResourceSuggestions",
       system,
       messages: [{ role: "user", content: user }],
       model: "fast",
@@ -138,17 +176,36 @@ async function rankResources(
 
       userToken: auth.jwt,
     });
-    const suggested = (res.data.resources ?? []).slice(0, max).map((r, i) => ({
-      id: `suggested:${i + 1}`,
-      title: r.title ?? "Untitled",
-      type: r.type ?? "practice",
-      provider: r.howToFind,
-      source: "community" as const,
-      priority: r.priority ?? i + 1,
-      whyRecommended: r.whyRecommended ?? `Targets ${skills[0] ?? field}.`,
-      forSkill: skills[0],
-    }));
-    return { resources: suggested, unsourced: true, research, reasons };
+    const named = (Array.isArray(res.data.resources) ? res.data.resources : [])
+      .filter((r) => typeof r.title === "string" && r.title.trim())
+      .slice(0, max)
+      .map((r) => ({ ...r, title: r.title!.trim() }));
+    const linked = await withCheckedLinks(named, field);
+    const suggested = linked
+      .filter((r) => !done.has(normaliseUrl(r.url)!))
+      .map((r, i): RankedResource => {
+        const resource: RankedResource = {
+          id: `suggested:${i + 1}`,
+          title: r.title,
+          type: r.type ?? "practice",
+          provider: r.howToFind,
+          source: "community",
+          url: r.url,
+          linkKind: r.linkKind,
+          priority: r.priority ?? i + 1,
+          whyRecommended: r.whyRecommended ?? `Targets ${skills[0] ?? field}.`,
+          forSkill: targetSkill(r.forSkill, skills),
+        };
+        const myStatus = statusFor(ctx.resources, r.url);
+        return myStatus ? { ...resource, myStatus } : resource;
+      });
+    return {
+      resources: suggested,
+      unsourced: true,
+      officialTraining: officialTrainingLinks(res.data.accreditedTraining),
+      research,
+      reasons,
+    };
   }
 
   // 4. Rank whatever we have for THIS learner.
@@ -196,6 +253,7 @@ async function rankResources(
       return myStatus ? { ...r, myStatus } : r;
     }),
     unsourced: false,
+    officialTraining: [],
     research,
     reasons,
   };
@@ -221,7 +279,12 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
     },
     async (args) => {
       const ctx = await assembleLearnerContext(auth.db, auth.userId, {});
-      const result = await rankResources(deps, ctx, args);
+      // The real field only (a goal can be any sentence); cached a day per field.
+      const profile = await resolveFieldProfile(horus, ctx.goal?.targetField ?? ctx.targetField ?? ctx.job?.title, {
+        userRef: auth.userId,
+        userToken: auth.jwt,
+      });
+      const result = await rankResources(deps, ctx, { ...args, technical: techJob(profile) });
       const skills = args.skills ?? ctx.weakSkills.map((s) => s.name);
 
       let recommendationId: string | null = null;
@@ -252,6 +315,7 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
           .filter((r) => r.source === "community")
           .map((r) => ({ ...r, why: r.whyRecommended })),
         unsourced: result.unsourced,
+        officialTraining: result.officialTraining,
         recommendationId,
         _meta: { research: researchMeta(result.research), degraded: degradation(result.reasons) },
       });
@@ -300,9 +364,8 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
           role: ctx.goal?.targetRole,
           intents: ["resource", "experience"],
           max: 4,
-          // Australian career documents, searched as the learner (one search per job, shared).
-          knowledgeIndex: true,
-          userToken: auth.jwt,
+          // No knowledge index here: its documents are career reports and
+          // application guides, which would end up as "resources" in the plan.
         }),
         // The real field only — never the "their field" placeholder.
         resolveFieldProfile(horus, args.field ?? ctx.goal?.targetField ?? ctx.targetField ?? ctx.job?.title, {
@@ -352,6 +415,7 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
           goal: args.goal ?? ctx.goal?.targetRole,
           field,
           maxResults: 6,
+          technical: techJob(profile),
         }),
       ]);
       reasons.push(...resourceResult.reasons);
@@ -385,6 +449,7 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
         plan: planRes.data,
         resources: resourceResult.resources,
         unsourcedResources: resourceResult.unsourced,
+        officialTraining: resourceResult.officialTraining,
         nextDrill,
         nextMock: {
           field,

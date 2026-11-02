@@ -16,7 +16,7 @@ import {
   type RoundType,
 } from "./interview-loop.js";
 import { rubricFor, weightsText } from "./scoring.js";
-import { debriefShape, evaluationShape, nextQuestionShape, questionsShape, type JsonSchema } from "./answer-shapes.js";
+import { debriefShape, evaluationShape, nextQuestionShape, questionsShape, suggestionsShape, type JsonSchema } from "./answer-shapes.js";
 import type { LearnerContext } from "../types.js";
 
 function contextBlock(ctx?: LearnerContext): string {
@@ -725,19 +725,28 @@ export function suggestResourcesPrompt(args: {
   goal?: string;
   count: number;
   ctx?: LearnerContext;
+  /** Also ask which skills are normally learned through accredited (TAFE/RTO) training. Australia only. */
+  accreditedTraining?: boolean;
 }): PromptPair {
-  const system = `You are a learning strategist. No vetted resource catalogue is available for this learner, so recommend ${args.count} concrete LEARNING MOVES they can start this week — the kind of thing a practitioner in this field would actually name (a specific type of practice, a canonical text or standard, a project to build, a person to shadow).
-Do NOT invent URLs, course codes, prices or ratings. Name the thing and how to find it.
+  const accredited = args.accreditedTraining
+    ? `,
+  "accreditedTraining": [{ "skill": "one of the target skills", "searchTerm": "2-4 plain words to search Australia's national training register for, e.g. \\"first aid\\", \\"forklift\\", \\"white card\\", \\"individual support\\"" }]`
+    : "";
+  const accreditedRule = args.accreditedTraining
+    ? `\n"accreditedTraining" lists ONLY target skills that people in Australia normally gain through nationally recognised training (a unit or qualification from a TAFE or RTO — first aid, forklift, white card, a Certificate III in a trade or care). Leave it empty ([]) for skills learned on the job or at university.`
+    : "";
+  const system = `You are a learning strategist. No vetted resource catalogue is available for this learner, so recommend ${args.count} concrete LEARNING MOVES they can start this week — the kind of thing a practitioner in this field would actually name (a specific type of practice, a canonical text or standard, a free course, a project to build, a person to shadow). Prefer free material.
+"url" is the exact web address of that page ONLY when you are sure it exists — an official body, a published standard, a well-known free course. Otherwise null. Every address is opened before the learner sees it, and one that doesn't open is replaced by a web search, so a guess gains nothing. "search" is what to type into a search engine to find it: 3-7 words naming the actual material and who publishes it, never the instruction. No unit or course codes anywhere (they get superseded; the official training links cover accredited courses), and never invent prices or ratings.${accreditedRule}
 
-Return ONLY JSON:
-{ "resources": [{ "title": string, "type": "practice|reading|project|course|community", "whyRecommended": string, "priority": number, "howToFind": string }] }`;
+Return ONLY JSON, with "resources" first:
+{ "resources": [{ "title": string, "type": "practice|reading|project|course|community", "forSkill": "the target skill it builds", "whyRecommended": string, "priority": number, "howToFind": string, "url": string | null, "search": string }]${accredited} }`;
 
   const user = `FIELD: ${args.field}
 TARGET SKILLS: ${args.skills.join(", ") || "(general readiness)"}
 GOAL: ${args.goal ?? "close the gaps before upcoming interviews"}${contextBlock(args.ctx)}
 Order by priority (1 = start here). Each must be specific enough to act on today.`;
 
-  return { system, user };
+  return { system, user, schema: suggestionsShape({ accreditedTraining: Boolean(args.accreditedTraining) }) };
 }
 
 /* ── career.* prompts ──────────────────────────────────────────────────────── */

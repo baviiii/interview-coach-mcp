@@ -79,6 +79,18 @@ export function knowledgeKind(intents: ResearchKind[] | undefined): ResearchKind
   return "fact";
 }
 
+/**
+ * A link a learner can open for a document. Horus gives a document its public
+ * address when it knows one; a PDF it doesn't still comes back as
+ * `pdf:<file name>`, which no browser opens — so that becomes a web search for
+ * the document's title, which finds the published copy.
+ */
+export function openableUrl(url: string, title: string | undefined): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  const name = title?.trim() || url.replace(/^pdf:/i, "").replace(/\.pdf$/i, "").replace(/[_-]+/g, " ");
+  return `https://duckduckgo.com/?q=${encodeURIComponent(name)}`;
+}
+
 /** horus-rag's sources as research snippets: one per document, faint matches dropped. */
 export function toSnippets(sources: KnowledgeSource[], kind: ResearchKind): ResearchSnippet[] {
   const seen = new Set<string>();
@@ -93,7 +105,7 @@ export function toSnippets(sources: KnowledgeSource[], kind: ResearchKind): Rese
     out.push({
       kind,
       text: truncate(text, 240),
-      sourceUrl: url,
+      sourceUrl: openableUrl(url, s.title),
       sourceLabel: truncate(s.title?.trim() || "Career knowledge base", 80),
       stat: "Knowledge base",
       origin: "knowledge-index",

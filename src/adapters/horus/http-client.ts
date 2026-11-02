@@ -31,6 +31,16 @@ export function retryDelay(status: number, body: string, attempt: number): numbe
   return (attempt === 1 ? 1000 : 3000) + Math.floor(Math.random() * 500);
 }
 
+/**
+ * Horus's error for an answer it couldn't read as JSON (the AI SDK's "No
+ * object generated", seen 2026-11-02 on a resource suggestion). The model
+ * did answer, so asking again can work — unlike running out of tokens, where
+ * the same budget fails the same way.
+ */
+export function unreadableUpstream(status: number, body: string): boolean {
+  return status >= 500 && /No object generated|could not parse the response/i.test(body);
+}
+
 export interface HttpHorusConfig {
   baseUrl: string;
   apiKey?: string;
@@ -121,6 +131,11 @@ export class HttpHorusClient implements HorusPort {
         throw new QuotaError(message, details);
       }
 
+      // Horus ran the model but couldn't read its answer as JSON. That is a bad
+      // answer, not an outage, so the answer check may ask once more.
+      if (unreadableUpstream(res.status, text)) {
+        throw new UnreadableAnswerError(`Horus ${res.status}: ${text.slice(0, 300)}`);
+      }
       throw new UpstreamError(`Horus ${res.status}: ${text.slice(0, 300)}`);
     }
     return (await res.json()) as R;

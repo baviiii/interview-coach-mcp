@@ -80,7 +80,12 @@ const TECH_INDUSTRY_FORMATS: ReadonlySet<string> = new Set(["coding", "system_de
  * couldn't be worked out has neutral formats, so it doesn't qualify.
  */
 export function groundingFits(grounding: GroundingPort, profile: Pick<FieldProfile, "domainFormats">): boolean {
-  return !grounding.techOnly || profile.domainFormats.some((f) => TECH_INDUSTRY_FORMATS.has(f));
+  return !grounding.techOnly || techJob(profile);
+}
+
+/** A software or IT job: its interviews include coding or system design. */
+export function techJob(profile: Pick<FieldProfile, "domainFormats">): boolean {
+  return profile.domainFormats.some((f) => TECH_INDUSTRY_FORMATS.has(f));
 }
 
 /** A research snippet as a proof chip: the real post, page or guide it came from. */
