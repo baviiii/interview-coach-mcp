@@ -46,7 +46,36 @@ export interface SkillVideos {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const MAX_CACHED = 500;
 const cache = new Map<string, { at: number; result: SkillVideos }>();
+
+function remember(key: string, result: SkillVideos): void {
+  // Oldest out first (a Map keeps insertion order), so memory stays bounded.
+  if (cache.size >= MAX_CACHED) cache.delete(cache.keys().next().value!);
+  cache.set(key, { at: Date.now(), result });
+}
+
+/**
+ * New (not yet remembered) searches each learner may start per hour. Every
+ * search spends 1% of the whole site's daily YouTube allowance, so without
+ * this one person typing made-up skills could use it up for everyone.
+ * Remembered results are free and don't count. Per Lambda copy, like the
+ * rate limiter.
+ */
+export const NEW_SEARCHES_PER_HOUR = 6;
+const searchesBy = new Map<string, number[]>();
+
+export function allowNewSearch(userId: string, now = Date.now()): boolean {
+  const recent = (searchesBy.get(userId) ?? []).filter((t) => now - t < HOUR_MS);
+  if (recent.length >= NEW_SEARCHES_PER_HOUR) {
+    searchesBy.set(userId, recent);
+    return false;
+  }
+  recent.push(now);
+  searchesBy.set(userId, recent);
+  return true;
+}
 
 const watchUrl = (id: string) => `https://www.youtube.com/watch?v=${id}`;
 
@@ -90,19 +119,22 @@ export async function findSkillVideos(
   const key = [config.market, args.field, args.skill, max].map((s) => String(s).trim().toLowerCase()).join("|");
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < DAY_MS) return hit.result;
+  if (!allowNewSearch(deps.auth.userId)) {
+    return { skill: args.skill, videos: [], pickedBy: "none", reason: "too many new video searches this hour — try again later" };
+  }
 
   const found = await searchVideos(`${args.skill} ${args.field}`);
   if (!found.videos.length) {
     const result: SkillVideos = { skill: args.skill, videos: [], pickedBy: "none", reason: found.reason ?? "no videos found" };
     // A real "nothing matched" is remembered; a failure or a spent allowance isn't, so it's tried again.
-    if (!found.reason) cache.set(key, { at: Date.now(), result });
+    if (!found.reason) remember(key, result);
     return result;
   }
 
   const shortlist = shortlistVideos(found.videos);
   if (!shortlist.length) {
     const result: SkillVideos = { skill: args.skill, videos: [], pickedBy: "none", reason: "no video passed the quality rules" };
-    cache.set(key, { at: Date.now(), result });
+    remember(key, result);
     return result;
   }
 
@@ -124,7 +156,7 @@ export async function findSkillVideos(
       videos: applyPicks(shortlist, res.data.picks, args.skill, max),
       pickedBy: "coach",
     };
-    cache.set(key, { at: Date.now(), result });
+    remember(key, result);
     return result;
   } catch {
     // The coach couldn't judge them: still show the best by the rules, say so, and don't remember it.

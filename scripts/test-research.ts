@@ -81,7 +81,7 @@ import { plausibleHost, privateAddress } from "../src/adapters/research/link-che
 import { isoSeconds, regionFor, searchVideos, type YouTubeVideo } from "../src/adapters/research/youtube.js";
 import { config } from "../src/config.js";
 import { shortlistVideos, usableVideos, videoScore } from "../src/domain/video-quality.js";
-import { applyPicks } from "../src/tools/videos.js";
+import { allowNewSearch, applyPicks, NEW_SEARCHES_PER_HOUR } from "../src/tools/videos.js";
 import {
   KnowledgeIndexResearchSource,
   openableUrl,
@@ -1374,6 +1374,15 @@ await checkAsync("without a YouTube key, videos are an empty list that says why 
     globalThis.fetch = realFetch;
     (config.youtube as { apiKey?: string }).apiKey = realKey;
   }
+});
+
+
+check("one learner can't use up the site's YouTube allowance: a few new searches an hour each", () => {
+  const t0 = Date.parse("2026-11-05T00:00:00Z");
+  for (let i = 0; i < NEW_SEARCHES_PER_HOUR; i++) assert.ok(allowNewSearch("greedy", t0 + i), `search ${i + 1} allowed`);
+  assert.ok(!allowNewSearch("greedy", t0 + 10), "one more in the same hour is refused");
+  assert.ok(allowNewSearch("someone-else", t0 + 10), "other learners are unaffected");
+  assert.ok(allowNewSearch("greedy", t0 + 60 * 60 * 1000 + 1), "an hour later they can search again");
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);
