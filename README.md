@@ -58,7 +58,7 @@ Your app or MCP client
 
 ## What can it do?
 
-**29 tools** across six areas. Run `npm run smoke` to list them all.
+**30 tools** across six areas. Run `npm run smoke` to list them all.
 
 | Area | What you get |
 |------|----------------|
@@ -191,6 +191,19 @@ Needs CareerCraft migration `20261031000000_coach_saved_results_and_resource_lin
 resources, the drill that's due and what the next mock should target — persisted as one resumable
 recommendation.
 
+Resources there are things to learn from: catalogue rows, community picks (Hacker News only for tech jobs),
+else the coach's own picks — each with the page it named when that page is checked to open
+(`adapters/research/link-check.ts`), otherwise a web search for it. Learners in Australia also get
+`officialTraining`: the national training register and Your Career's course search, for skills normally learned
+through accredited training.
+
+**Videos** come separately, one skill at a time: `find_skill_videos` / `POST /api/study/videos` takes `skill`
+(and `field`) and returns up to 2–3 YouTube videos — YouTube's results cut down by hard rules (3–30 minutes,
+enough views, under ten years old, playable inside the site; `domain/video-quality.ts`), then judged by the coach
+for whether they really teach the skill by the market's rules. Needs `YOUTUBE_API_KEY`; without it the list is
+empty with a reason. Results are kept a day in memory, never saved — YouTube's policies cap how long its data
+may be kept.
+
 It is built to work on an **empty database**. Every piece degrades instead of failing:
 
 | Situation | Old behaviour | Now |
@@ -222,7 +235,7 @@ Tools wired to research: `generate_contextual_questions`, `start_interview_sessi
 
 **The Reddit caveat (important):** Reddit's anonymous `search.json` is **403-blocked from datacenter IPs** (any User-Agent), which is where this server runs. App credentials (`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`) still switch research to Reddit's app-only OAuth endpoint, **but they can no longer be had for free in minutes**: since late 2025 Reddit's Responsible Builder Policy requires a manual application for API access (reported as 2–4 weeks), and new requests for public access were reported to stop on 2026-10-31. Wikipedia + Hacker News work everywhere with zero config.
 
-So for most jobs outside tech, research finds little to cite. Then `find_proven_resources` falls back to the coach's own suggestions, flagged `unsourced` (`_meta.unsourced`), each with a web-search link rather than an invented one, and tips stay `unverified`. A paid search API (Tavily, Exa, Brave) behind `ResearchPort` is the route to real links for every job.
+So for most jobs outside tech, research finds little to cite. Then `find_proven_resources` falls back to the coach's own suggestions, flagged `unsourced` (`_meta.unsourced`), each linking to the page it named when that page is checked to open, otherwise to a web search for it, and tips stay `unverified`. A paid search API (Tavily, Exa, Brave) behind `ResearchPort` is the route to real links for every job.
 
 It's **best-effort**: a blocked/slow source is dropped, `_meta.research.partial` flags it, and the tool still produces output from whatever real signals it did get (or its pre-research behavior if none).
 
@@ -335,6 +348,7 @@ cp .env.example .env
 | `HORUS_KNOWLEDGE_URL` | Where the knowledge index is searched. Defaults to `{HORUS_BASE_URL}/horus-rag`, CareerCraft's function next to `/infer` |
 | `RESEARCH_MODE=reddit` / `mock` / `off` | Reddit only / offline canned / disabled |
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Free Reddit app creds → reliable Reddit research (anonymous often 403s) |
+| `YOUTUBE_API_KEY` | YouTube Data API v3 key → Study's "Watch" videos (`find_skill_videos`). Free: about 100 new skills a day |
 | `SUPABASE_URL` + `SUPABASE_ANON_KEY` | Real user data, RLS-scoped |
 | `AUTH_MODE=dev` | Skip auth, canned learner — **never in production** (the server refuses to boot with it when `NODE_ENV=production`) |
 | `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX` | Per-user (hashed token, else IP) rate limit on `/mcp` + `/api` — default 60 req/min. A spend cap: every request can trigger research + a paid LLM call |
@@ -473,6 +487,7 @@ src/
 | `POST /api/study/drill/result` | `record_drill_result` |
 | `POST /api/study/explain` | `explain_concept` |
 | `POST /api/study/resource/progress` | `track_resource_progress` |
+| `POST /api/study/videos` | `find_skill_videos` |
 | `POST /api/learning/pathway` | `get_learning_pathway` |
 | `POST /api/proven-tips` | `get_proven_tips` |
 | `POST /api/resources` | `find_proven_resources` |

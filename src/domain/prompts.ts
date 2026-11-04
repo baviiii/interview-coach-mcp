@@ -16,7 +16,17 @@ import {
   type RoundType,
 } from "./interview-loop.js";
 import { rubricFor, weightsText } from "./scoring.js";
-import { debriefShape, evaluationShape, nextQuestionShape, questionsShape, suggestionsShape, type JsonSchema } from "./answer-shapes.js";
+import {
+  debriefShape,
+  evaluationShape,
+  nextQuestionShape,
+  questionsShape,
+  suggestionsShape,
+  videoPicksShape,
+  type JsonSchema,
+} from "./answer-shapes.js";
+import { lengthLabel } from "./video-quality.js";
+import type { YouTubeVideo } from "../adapters/research/youtube.js";
 import type { LearnerContext } from "../types.js";
 
 function contextBlock(ctx?: LearnerContext): string {
@@ -747,6 +757,41 @@ GOAL: ${args.goal ?? "close the gaps before upcoming interviews"}${contextBlock(
 Order by priority (1 = start here). Each must be specific enough to act on today.`;
 
   return { system, user, schema: suggestionsShape({ accreditedTraining: Boolean(args.accreditedTraining) }) };
+}
+
+/**
+ * Which YouTube videos are worth watching to learn one skill for one job. The
+ * candidates have already passed the length/views/age rules (video-quality.ts);
+ * this is the judgement those can't make — does it actually teach the skill,
+ * is it trustworthy, does it follow this market's rules. Titles are YouTube's
+ * own; "why" is ours and sits beside them, never replacing them.
+ */
+export function videoPickPrompt(args: { field: string; skill: string; videos: YouTubeVideo[]; max?: number }): PromptPair {
+  const max = args.max ?? 2;
+  const system = `You choose YouTube videos for someone learning one skill for their job. Pick at most ${max}, best first — and fewer, or none, when the candidates aren't good enough. An empty list is a fine answer; a weak pick is not.
+A good pick genuinely TEACHES this skill as this job does it: a demonstration, a worked example or a clear explanation, from a credible source (a training provider, a professional body, an experienced practitioner or educator).
+Never pick: ads or product promotions, vlogs, reactions, "day in the life", clickbait, interview-question lists when the skill isn't interviewing, or a video built on another country's rules, standards or licences where they differ from the learner's market (for example a different electrical wiring code or drug scheduling).
+"why" is one plain sentence to the learner on what they'll learn from it. Use each candidate's id exactly as given.
+
+Return ONLY JSON:
+{ "picks": [{ "id": string, "why": string }] }`;
+
+  const list = args.videos
+    .map((v) => {
+      const year = v.publishedAt.slice(0, 4) || "?";
+      const views = v.views >= 1000 ? `${Math.round(v.views / 1000)}K views` : `${v.views} views`;
+      const about = v.description.replace(/\s+/g, " ").trim().slice(0, 220);
+      return `[${v.id}] "${v.title}" — ${v.channelTitle} · ${views} · ${lengthLabel(v.durationSeconds)} · ${year}${about ? `\n  ${about}` : ""}`;
+    })
+    .join("\n");
+
+  const user = `JOB: ${args.field}
+SKILL TO LEARN: ${args.skill}
+
+CANDIDATES:
+${list}`;
+
+  return { system, user, schema: videoPicksShape() };
 }
 
 /* ── career.* prompts ──────────────────────────────────────────────────────── */

@@ -70,6 +70,8 @@ async function main() {
       HORUS_MODE: "mock",
       GROUNDING_MODE: "mock",
       RESEARCH_MODE: "mock",
+      // Offline: never reach YouTube, even when a developer's .env has a key.
+      YOUTUBE_API_KEY: "",
       RATE_LIMIT_MAX: String(RATE_MAX),
       NODE_ENV: "test",
     },
@@ -323,6 +325,13 @@ async function main() {
       fail(`tracking with neither a resource nor a link should be refused: ${JSON.stringify(neither.json)}`);
     }
     console.log("✓ a link can be tracked (normalised), and a request with no resource is refused");
+
+    // Videos need a YouTube key; without one the answer is an empty list that says why, never an error.
+    const videos = await mustPost("/api/study/videos", { skill: "Wound care", field: "Registered Nurse" });
+    if (!Array.isArray(videos.videos) || videos.videos.length !== 0 || !videos._meta?.reason) {
+      fail(`videos without a YouTube key should be empty with a reason: ${JSON.stringify(videos)}`);
+    }
+    console.log(`✓ videos without a YouTube key: empty, and says why ("${videos._meta.reason}")`);
 
     // The cost guard actually guards: hammer until 429.
     let tripped = false;

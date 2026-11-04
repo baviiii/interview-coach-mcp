@@ -58,6 +58,7 @@ import {
   realWorldBlock,
   selectionCriterionPrompt,
   suggestResourcesPrompt,
+  videoPickPrompt,
 } from "../src/domain/prompts.js";
 import {
   buildDrillScore,
@@ -77,6 +78,10 @@ import { MAX_ATTEMPTS, retryDelay, unreadableUpstream } from "../src/adapters/ho
 import { searchUrl } from "../src/tools/proof.js";
 import { officialTrainingLinks, withCheckedLinks } from "../src/tools/suggested-links.js";
 import { plausibleHost, privateAddress } from "../src/adapters/research/link-check.js";
+import { isoSeconds, regionFor, searchVideos, type YouTubeVideo } from "../src/adapters/research/youtube.js";
+import { config } from "../src/config.js";
+import { shortlistVideos, usableVideos, videoScore } from "../src/domain/video-quality.js";
+import { applyPicks } from "../src/tools/videos.js";
 import {
   KnowledgeIndexResearchSource,
   openableUrl,
@@ -1277,6 +1282,98 @@ await checkAsync("a fallback search uses the coach's search phrase, not an instr
     async () => false,
   );
   assert.equal(decodeURIComponent(item!.url.split("q=")[1]!), "wound care education Australia nurses", "the market isn't added twice");
+});
+
+check("YouTube lengths and regions are read the way the API gives them", () => {
+  assert.equal(isoSeconds("PT12M3S"), 723);
+  assert.equal(isoSeconds("PT1H2M3S"), 3723);
+  assert.equal(isoSeconds("PT45S"), 45);
+  assert.equal(isoSeconds("P1DT1M"), 86_460);
+  assert.equal(isoSeconds("PT0S"), 0);
+  assert.equal(isoSeconds("garbage"), 0, "unreadable is 0, which the length rule drops");
+  assert.equal(isoSeconds(undefined), 0);
+  assert.equal(regionFor("Australia"), "AU");
+  assert.equal(regionFor(" new zealand "), "NZ");
+  assert.equal(regionFor("Atlantis"), undefined);
+});
+
+check("only real lessons survive the video rules, best first", () => {
+  const now = Date.parse("2026-11-04T00:00:00Z");
+  const v = (id: string, over: Partial<YouTubeVideo> = {}): YouTubeVideo => ({
+    id, title: id, channelTitle: "c", description: "", publishedAt: "2025-01-01T00:00:00Z",
+    durationSeconds: 600, views: 50_000, likes: 2_000, thumbnail: "", embeddable: true, madeForKids: false, live: "none", ...over,
+  });
+  const kept = usableVideos(
+    [
+      v("good"),
+      v("short", { durationSeconds: 59 }),
+      v("marathon", { durationSeconds: 3 * 3600 }),
+      v("stream", { live: "live" }),
+      v("kids", { madeForKids: true }),
+      v("noembed", { embeddable: false }),
+      v("unwatched", { views: 300 }),
+      v("ancient", { publishedAt: "2012-01-01T00:00:00Z" }),
+    ],
+    now,
+  ).map((x) => x.id);
+  assert.deepEqual(kept, ["good"]);
+
+  assert.deepEqual(
+    usableVideos([v("hit", { views: 2_000_000 }), v("tiny", { views: 20_000 })], now).map((x) => x.id),
+    ["hit"],
+    "far below the top candidate's views is an outlier upload",
+  );
+
+  const ranked = shortlistVideos([v("old", { publishedAt: "2019-01-01T00:00:00Z" }), v("fresh", { publishedAt: "2026-06-01T00:00:00Z" })], 8, now);
+  assert.deepEqual(ranked.map((x) => x.id), ["fresh", "old"], "same reach: the recent one first");
+  assert.ok(videoScore(v("liked", { likes: 4_000 }), now) > videoScore(v("meh", { likes: 100 }), now), "better liked ranks higher");
+});
+
+check("the coach's video picks keep only real candidates, in its order, capped", () => {
+  const cand = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"].map(
+    (id): YouTubeVideo => ({
+      id, title: `T ${id}`, channelTitle: "c", description: "", publishedAt: "2025-01-01", durationSeconds: 600,
+      views: 10_000, likes: null, thumbnail: `https://i.ytimg.com/vi/${id}/mqdefault.jpg`, embeddable: true, madeForKids: false, live: "none",
+    }),
+  );
+  const picked = applyPicks(
+    cand,
+    [{ id: "ccccccccccc", why: "Shows each step." }, { id: "invented-id", why: "x" }, { id: "ccccccccccc", why: "again" }, { id: "aaaaaaaaaaa" }, { id: "bbbbbbbbbbb" }],
+    "Wound care",
+    2,
+  );
+  assert.deepEqual(picked.map((p) => p.videoId), ["ccccccccccc", "aaaaaaaaaaa"]);
+  assert.equal(picked[0]!.title, "T ccccccccccc", "YouTube's own title, unchanged");
+  assert.equal(picked[0]!.why, "Shows each step.");
+  assert.equal(picked[0]!.url, "https://www.youtube.com/watch?v=ccccccccccc");
+  assert.equal(picked[1]!.why, "", "no reason given is shown as none, not invented");
+  assert.deepEqual(applyPicks(cand, "nonsense", "x", 2), [], "an unreadable answer picks nothing");
+
+  const prompt = videoPickPrompt({ field: "Electrician", skill: "Fault finding", videos: cand, max: 2 });
+  assert.match(prompt.user, /\[aaaaaaaaaaa\] "T aaaaaaaaaaa" — c · 10K views · 10 min · 2025/);
+  assert.match(prompt.system, /another country's rules/);
+  assert.deepEqual(Object.keys((prompt.schema as { properties: object }).properties), ["picks"]);
+});
+
+await checkAsync("without a YouTube key, videos are an empty list that says why — no call is made", async () => {
+  let called = false;
+  const realFetch = globalThis.fetch;
+  // Whatever the developer's .env says, this check runs keyless.
+  const realKey = config.youtube.apiKey;
+  (config.youtube as { apiKey?: string }).apiKey = undefined;
+  globalThis.fetch = (async () => {
+    called = true;
+    return new Response("{}");
+  }) as unknown as typeof fetch;
+  try {
+    const out = await searchVideos("wound care nurse");
+    assert.deepEqual(out.videos, []);
+    assert.match(out.reason ?? "", /no YouTube key/);
+    assert.ok(!called);
+  } finally {
+    globalThis.fetch = realFetch;
+    (config.youtube as { apiKey?: string }).apiKey = realKey;
+  }
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

@@ -7,6 +7,7 @@ import { registerInterviewTools, type ToolDeps } from "../tools/interview.js";
 import { registerLearningTools } from "../tools/learning.js";
 import { registerProfileTools } from "../tools/profile.js";
 import { registerProofTools } from "../tools/proof.js";
+import { registerVideoTools } from "../tools/videos.js";
 import { registerSelectionTools } from "../tools/selection.js";
 import { registerStudyTools } from "../tools/study.js";
 
@@ -23,6 +24,7 @@ export function buildServer(deps: ToolDeps): McpServer {
   registerProfileTools(server, deps);
   registerLearningTools(server, deps);
   registerProofTools(server, deps);
+  registerVideoTools(server, deps);
   registerSelectionTools(server, deps);
   registerAnalyticsTools(server, deps);
   registerResources(server, deps);

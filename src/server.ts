@@ -143,6 +143,7 @@ app.post("/api/study/drill", rest("next_drill"));
 app.post("/api/study/drill/result", rest("record_drill_result"));
 app.post("/api/study/explain", rest("explain_concept"));
 app.post("/api/study/resource/progress", rest("track_resource_progress"));
+app.post("/api/study/videos", rest("find_skill_videos"));
 
 app.listen(config.port, () => {
   console.log(

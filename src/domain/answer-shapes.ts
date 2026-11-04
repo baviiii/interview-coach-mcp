@@ -125,6 +125,13 @@ export function suggestionsShape(opts: { accreditedTraining: boolean }): JsonSch
   );
 }
 
+/** videoPickPrompt: the videos worth watching, best first; none when nothing is good enough. */
+export function videoPicksShape(): JsonSchema {
+  return obj({
+    picks: list(obj({ id: str("the candidate's id, exactly"), why: str("one sentence: what they'll learn") })),
+  });
+}
+
 /** finalEvaluationPrompt. Each round type adds its own section (see debriefFraming). */
 export function debriefShape(roundType: string): JsonSchema {
   const extra: Record<string, JsonSchema> =

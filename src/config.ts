@@ -80,6 +80,13 @@ export const config = {
     userAgent: opt("REDDIT_USER_AGENT", "interview-coach-mcp/0.2 (career interview research)")!,
   },
 
+  // YouTube Data API v3 — the Study page's "Watch" row. Free: 10,000 quota
+  // units a day, a search costs 100, so about 100 new skills a day. Without a
+  // key the row is simply empty.
+  youtube: {
+    apiKey: opt("YOUTUBE_API_KEY"),
+  },
+
   // Cost/abuse guards. Every /mcp and /api hit can fan out to research sources
   // plus a paid LLM call, so the rate limit is a spend cap as much as an abuse
   // guard. llmTimeoutMs bounds every model call (a hung upstream otherwise
