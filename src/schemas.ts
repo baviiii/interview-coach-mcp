@@ -159,6 +159,13 @@ export const skillVideosInput = {
   max: z.number().int().min(1).max(3).optional(),
 };
 
+export const skillWebInput = {
+  skill: z.string().min(1).max(100),
+  /** The job; defaults to the learner's career goal. */
+  field: z.string().max(100).optional(),
+  max: z.number().int().min(1).max(5).optional(),
+};
+
 export const explainInput = {
   recommendationId: z.string().uuid(),
 };

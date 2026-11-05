@@ -72,6 +72,7 @@ async function main() {
       RESEARCH_MODE: "mock",
       // Offline: never reach YouTube, even when a developer's .env has a key.
       YOUTUBE_API_KEY: "",
+      WEB_SEARCH_PROVIDER: "off",
       RATE_LIMIT_MAX: String(RATE_MAX),
       NODE_ENV: "test",
     },
@@ -332,6 +333,12 @@ async function main() {
       fail(`videos without a YouTube key should be empty with a reason: ${JSON.stringify(videos)}`);
     }
     console.log(`✓ videos without a YouTube key: empty, and says why ("${videos._meta.reason}")`);
+
+    const web = await mustPost("/api/study/web", { skill: "Wound care", field: "Registered Nurse" });
+    if (web.discussions?.length !== 0 || web.guides?.length !== 0 || !web._meta?.reason) {
+      fail(`web resources with search off should be empty with a reason: ${JSON.stringify(web)}`);
+    }
+    console.log(`✓ web resources with search off: empty, and says why ("${web._meta.reason}")`);
 
     // The cost guard actually guards: hammer until 429.
     let tripped = false;

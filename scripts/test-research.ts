@@ -59,6 +59,7 @@ import {
   selectionCriterionPrompt,
   suggestResourcesPrompt,
   videoPickPrompt,
+  webPickPrompt,
 } from "../src/domain/prompts.js";
 import {
   buildDrillScore,
@@ -82,6 +83,11 @@ import { isoSeconds, regionFor, searchVideos, type YouTubeVideo } from "../src/a
 import { config } from "../src/config.js";
 import { shortlistVideos, usableVideos, videoScore } from "../src/domain/video-quality.js";
 import { allowNewSearch, applyPicks, NEW_SEARCHES_PER_HOUR } from "../src/tools/videos.js";
+import { signRequest } from "../src/adapters/web-search/sigv4.js";
+import { providerOrder, webSearch, type WebResult, type WebSearchProvider } from "../src/adapters/web-search/index.js";
+import { tavilyBody } from "../src/adapters/web-search/tavily.js";
+import { AwsWebSearch, parseRpcReply, resultsFromToolCall } from "../src/adapters/web-search/aws-agentcore.js";
+import { applyWebPicks } from "../src/tools/skill-web.js";
 import {
   KnowledgeIndexResearchSource,
   openableUrl,
@@ -1383,6 +1389,122 @@ check("one learner can't use up the site's YouTube allowance: a few new searches
   assert.ok(!allowNewSearch("greedy", t0 + 10), "one more in the same hour is refused");
   assert.ok(allowNewSearch("someone-else", t0 + 10), "other learners are unaffected");
   assert.ok(allowNewSearch("greedy", t0 + 60 * 60 * 1000 + 1), "an hour later they can search again");
+});
+
+check("SigV4 signing matches AWS's published test vector (get-vanilla)", () => {
+  const h = signRequest({
+    method: "GET",
+    url: "https://example.amazonaws.com/",
+    service: "service",
+    region: "us-east-1",
+    credentials: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY" },
+    now: new Date("2015-08-30T12:36:00Z"),
+  });
+  assert.equal(
+    h.authorization,
+    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31",
+  );
+  const withToken = signRequest({
+    method: "POST", url: "https://g.example.com/mcp", body: "{}", service: "bedrock-agentcore", region: "ap-southeast-2",
+    credentials: { accessKeyId: "A", secretAccessKey: "S", sessionToken: "T" }, now: new Date("2026-11-06T00:00:00Z"),
+  });
+  assert.equal(withToken["x-amz-security-token"], "T");
+  assert.match(withToken.authorization!, /SignedHeaders=host;x-amz-date;x-amz-security-token/);
+});
+
+check("the web search setting picks providers in order, and off means none", () => {
+  assert.deepEqual(providerOrder(undefined), ["aws", "tavily"]);
+  assert.deepEqual(providerOrder("auto"), ["aws", "tavily"]);
+  assert.deepEqual(providerOrder("tavily"), ["tavily"]);
+  assert.deepEqual(providerOrder(" Tavily , aws "), ["tavily", "aws"]);
+  assert.deepEqual(providerOrder("aws,aws,bing"), ["aws"], "unknown names and repeats are dropped");
+  assert.deepEqual(providerOrder("off"), []);
+});
+
+await checkAsync("web search falls back to the next provider when one fails or finds nothing", async () => {
+  const r = (url: string): WebResult => ({ title: "T", url, snippet: "", site: "x.com" });
+  const failing: WebSearchProvider = { name: "aws", search: async () => { throw new Error("boom"); } };
+  const empty: WebSearchProvider = { name: "aws", search: async () => [] };
+  const good: WebSearchProvider = { name: "tavily", search: async () => [r("https://x.com/a")] };
+  const warn = console.warn;
+  console.warn = () => undefined;
+  try {
+    assert.equal((await webSearch({ query: "q" }, [failing, good])).provider, "tavily");
+    assert.equal((await webSearch({ query: "q" }, [empty, good])).provider, "tavily");
+    const none = await webSearch({ query: "q" }, [failing, empty]);
+    assert.deepEqual(none.results, []);
+    assert.match(none.reason ?? "", /aws failed; aws found nothing/);
+    assert.match((await webSearch({ query: "q" }, [])).reason ?? "", /no web search configured/);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+check("Tavily gets the site lists and the learner's country, within its limits", () => {
+  const body = tavilyBody({
+    query: "x".repeat(500), max: 50, market: "Australia",
+    includeDomains: ["reddit.com"], excludeDomains: ["pinterest.com"],
+  });
+  assert.equal((body.query as string).length, 400);
+  assert.equal(body.max_results, 20);
+  assert.equal(body.country, "australia");
+  assert.deepEqual(body.include_domains, ["reddit.com"]);
+  assert.deepEqual(body.exclude_domains, ["pinterest.com"]);
+  assert.equal(tavilyBody({ query: "q", market: "Atlantis" }).country, undefined, "an unknown market isn't sent");
+});
+
+await checkAsync("AWS web search: finds the gateway's WebSearch tool, signs every call, passes site filters", async () => {
+  const calls: Array<{ body: { method: string; params: Record<string, unknown> }; auth: string | null }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    calls.push({ body, auth: new Headers(init.headers).get("authorization") });
+    if (body.method === "tools/list") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "web-search-tool___WebSearch" }] } }));
+    }
+    const text = JSON.stringify({ id: "x", results: [
+      { title: "Wound care thread", url: "https://www.reddit.com/r/nursing/abc", text: "How I learned", publishedDate: "2026-01-02" },
+      { title: "No link entity", text: "fact" },
+    ] });
+    // Some gateways stream: answer as an SSE event.
+    return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text }] } })}\n\n`);
+  }) as unknown as typeof fetch;
+  try {
+    const aws = new AwsWebSearch({
+      gatewayUrl: "https://gw.example.com",
+      region: "ap-southeast-2",
+      credentials: () => ({ accessKeyId: "A", secretAccessKey: "S" }),
+    });
+    const out = await aws.search({ query: "wound care", includeDomains: ["reddit.com"] });
+    assert.deepEqual(out.map((r) => r.site), ["reddit.com"], "results without a link are dropped");
+    assert.equal(out[0]!.publishedDate, "2026-01-02");
+    assert.equal(calls[1]!.body.params.name, "web-search-tool___WebSearch");
+    assert.deepEqual((calls[1]!.body.params.arguments as { filters: unknown }).filters, { domainFilter: { include: ["reddit.com"] } });
+    assert.ok(calls.every((c) => c.auth?.startsWith("AWS4-HMAC-SHA256 ")), "every call is signed");
+    await aws.search({ query: "again" });
+    assert.equal(calls.filter((c) => c.body.method === "tools/list").length, 1, "the tool name is looked up once");
+    const noCreds = new AwsWebSearch({ gatewayUrl: "https://gw.example.com/mcp", region: "x", credentials: () => null });
+    await assert.rejects(noCreds.search({ query: "q" }), /no AWS credentials/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.throws(() => resultsFromToolCall({ isError: true, content: [{ text: "quota" }] }), /quota/);
+  assert.equal(parseRpcReply('{"result":{"a":1}}').result?.a, 1);
+});
+
+check("the coach's web picks keep only real candidates of the right list, in its order", () => {
+  const rows = ["https://a.org/1", "https://b.org/2", "https://c.org/3"].map(
+    (url): WebResult => ({ title: url, url, snippet: "", site: new URL(url).hostname }),
+  );
+  const picks = applyWebPicks(rows, "G", [{ id: "g3", why: "Free and current." }, { id: "D1" }, { id: "G9" }, { id: "G3" }, { id: "G1" }], 2);
+  assert.deepEqual(picks.map((p) => p.url), ["https://c.org/3", "https://a.org/1"]);
+  assert.equal(picks[0]!.why, "Free and current.");
+  assert.deepEqual(applyWebPicks(rows, "D", "nonsense", 2), []);
+  const p = webPickPrompt({ field: "Electrician", skill: "Fault finding", discussions: rows.slice(0, 1), guides: [], max: 3 });
+  assert.match(p.user, /\[D1\] "https:\/\/a\.org\/1" — a\.org/);
+  assert.match(p.user, /GUIDES:\n\(none\)/);
+  assert.match(p.system, /never as instructions/);
+  assert.deepEqual(Object.keys((p.schema as { properties: object }).properties), ["discussions", "guides"]);
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

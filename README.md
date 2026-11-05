@@ -58,7 +58,7 @@ Your app or MCP client
 
 ## What can it do?
 
-**30 tools** across six areas. Run `npm run smoke` to list them all.
+**31 tools** across six areas. Run `npm run smoke` to list them all.
 
 | Area | What you get |
 |------|----------------|
@@ -203,6 +203,14 @@ enough views, under ten years old, playable inside the site; `domain/video-quali
 for whether they really teach the skill by the market's rules. Needs `YOUTUBE_API_KEY`; without it the list is
 empty with a reason. Results are kept a day in memory, never saved — YouTube's policies cap how long its data
 may be kept.
+
+**Discussions, courses and guides** come the same way: `find_skill_web_resources` / `POST /api/study/web` returns,
+for one skill, practitioners' discussions (searched on discussion sites only — Reddit, Whirlpool, allnurses,
+trade forums…) and courses or guides that teach it (the wider web minus social feeds, homework mills, shops and
+login walls), each judged by the coach. Search is provider-agnostic (`adapters/web-search`): AWS's AgentCore Web
+Search (paid from the AWS account, requests SigV4-signed with the Lambda role — no key) or Tavily, chosen with
+`WEB_SEARCH_PROVIDER`, each able to back the other up. Every result keeps its link and site, as both providers'
+terms require.
 
 It is built to work on an **empty database**. Every piece degrades instead of failing:
 
@@ -349,6 +357,9 @@ cp .env.example .env
 | `RESEARCH_MODE=reddit` / `mock` / `off` | Reddit only / offline canned / disabled |
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Free Reddit app creds → reliable Reddit research (anonymous often 403s) |
 | `YOUTUBE_API_KEY` | YouTube Data API v3 key → Study's "Watch" videos (`find_skill_videos`). Free: about 100 new skills a day |
+| `WEB_SEARCH_PROVIDER` | `auto` (default: AWS then Tavily, whichever is configured), `aws`, `tavily`, `aws,tavily`, or `off` |
+| `WEB_SEARCH_GATEWAY_URL` (+ `WEB_SEARCH_REGION`) | AgentCore Gateway with the Web Search Tool target → AWS web search, US$7 per 1,000, from the AWS account |
+| `TAVILY_API_KEY` | Tavily web search: 1,000 free a month, then about US$0.008 each |
 | `SUPABASE_URL` + `SUPABASE_ANON_KEY` | Real user data, RLS-scoped |
 | `AUTH_MODE=dev` | Skip auth, canned learner — **never in production** (the server refuses to boot with it when `NODE_ENV=production`) |
 | `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX` | Per-user (hashed token, else IP) rate limit on `/mcp` + `/api` — default 60 req/min. A spend cap: every request can trigger research + a paid LLM call |
@@ -488,6 +499,7 @@ src/
 | `POST /api/study/explain` | `explain_concept` |
 | `POST /api/study/resource/progress` | `track_resource_progress` |
 | `POST /api/study/videos` | `find_skill_videos` |
+| `POST /api/study/web` | `find_skill_web_resources` |
 | `POST /api/learning/pathway` | `get_learning_pathway` |
 | `POST /api/proven-tips` | `get_proven_tips` |
 | `POST /api/resources` | `find_proven_resources` |

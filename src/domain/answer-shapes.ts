@@ -132,6 +132,12 @@ export function videoPicksShape(): JsonSchema {
   });
 }
 
+/** webPickPrompt: the discussions and the guides worth opening, best first. */
+export function webPicksShape(): JsonSchema {
+  const pick = obj({ id: str("the candidate's id, exactly, e.g. D2 or G1"), why: str("one sentence: what they'll get from it") });
+  return obj({ discussions: list(pick), guides: list(pick) });
+}
+
 /** finalEvaluationPrompt. Each round type adds its own section (see debriefFraming). */
 export function debriefShape(roundType: string): JsonSchema {
   const extra: Record<string, JsonSchema> =

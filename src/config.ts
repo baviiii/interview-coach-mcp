@@ -87,6 +87,19 @@ export const config = {
     apiKey: opt("YOUTUBE_API_KEY"),
   },
 
+  // Web search for Study's "What people say" and "Courses & guides" rows —
+  // provider-agnostic (adapters/web-search). WEB_SEARCH_PROVIDER: auto (AWS
+  // then Tavily, whichever is configured), aws, tavily, "aws,tavily", or off.
+  //   AWS: an AgentCore Gateway with the Web Search Tool target (AWS_IAM auth;
+  //        requests are signed with the Lambda role's own credentials).
+  //   Tavily: an API key from tavily.com.
+  webSearch: {
+    provider: opt("WEB_SEARCH_PROVIDER", "auto"),
+    awsGatewayUrl: opt("WEB_SEARCH_GATEWAY_URL"),
+    awsRegion: opt("WEB_SEARCH_REGION", opt("AWS_REGION", "ap-southeast-2"))!,
+    tavilyKey: opt("TAVILY_API_KEY"),
+  },
+
   // Cost/abuse guards. Every /mcp and /api hit can fan out to research sources
   // plus a paid LLM call, so the rate limit is a spend cap as much as an abuse
   // guard. llmTimeoutMs bounds every model call (a hung upstream otherwise
