@@ -155,7 +155,15 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
       if (args.skill) {
         const known = ctx.skills.find((s) => s.name.toLowerCase() === args.skill!.toLowerCase());
         const skill = known ?? { name: args.skill, proficiency: 30, trend: "stable" as const };
-        pick = { skill, urgency: 0, whyNow: known ? "requested by the learner" : "requested by the learner (untracked skill — starting easy)" };
+        pick = {
+          skill,
+          urgency: 0,
+          whyNow: args.focus
+            ? "from your study plan"
+            : known
+              ? "requested by the learner"
+              : "requested by the learner (untracked skill — starting easy)",
+        };
       } else {
         pick = pickDrillSkill(ctx.skills);
       }
@@ -183,7 +191,7 @@ export function registerStudyTools(server: McpServer, deps: ToolDeps): void {
       }
 
       const difficulty = drillDifficulty(pick.skill.proficiency);
-      const { system, user } = drillPrompt({ skill: pick.skill.name, difficulty, field: args.field, ctx });
+      const { system, user } = drillPrompt({ skill: pick.skill.name, difficulty, field: args.field, focus: args.focus, ctx });
       const res = await horus.infer({
         task: "study.next_drill",
         system,

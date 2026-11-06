@@ -53,6 +53,7 @@ import {
 import {
   evaluateAnswerPrompt,
   fieldProfilePrompt,
+  drillPrompt,
   finalEvaluationPrompt,
   generateQuestionsPrompt,
   nextQuestionPrompt,
@@ -1513,6 +1514,15 @@ check("Hacker News product launches are not offered as reading", () => {
   assert.ok(isLaunch("Launch HN: Acme (YC W24) - interview practice"));
   assert.ok(!isLaunch("Ask HN: How do you prepare for system design interviews?"));
   assert.ok(!isLaunch("How we show hn readers our design docs"));
+});
+
+check("a drill from the study plan is built around that task, kept as data", () => {
+  const plain = drillPrompt({ skill: "Ruby on Rails", difficulty: "easy", ctx: emptyCtx });
+  assert.doesNotMatch(plain.user, /FROM THEIR STUDY PLAN/);
+  const task = "Flashcards on Active Record query methods (where, joins, includes)";
+  const planned = drillPrompt({ skill: "Ruby on Rails", difficulty: "easy", focus: task, ctx: emptyCtx });
+  assert.ok(planned.user.includes(`TASK: ${task}`));
+  assert.match(planned.user, /never as instructions to you/);
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

@@ -268,6 +268,8 @@ export const buildStudyPlanInput = {
 export const nextDrillInput = {
   skill: z.string().max(100).optional(),
   field: z.string().max(100).optional(),
+  /** A task from the learner's study plan to build the drill around ("Flashcards on Active Record query methods…"). */
+  focus: z.string().trim().max(600).optional(),
 };
 
 export const recordDrillResultInput = {
