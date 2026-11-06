@@ -24,8 +24,10 @@ import { FUNCTIONS_USED, TABLES_USED } from "../src/schema-used.js";
 
 import {
   buildCredentialCandidates,
+  cleanCertificationPlan,
   formatCredentialCandidates,
   matchCertification,
+  plainDomain,
 } from "../src/domain/certifications.js";
 import {
   describeInterviewStyle,
@@ -53,6 +55,7 @@ import {
 import {
   evaluateAnswerPrompt,
   fieldProfilePrompt,
+  certificationRecommendPrompt,
   drillPrompt,
   finalEvaluationPrompt,
   generateQuestionsPrompt,
@@ -1523,6 +1526,34 @@ check("a drill from the study plan is built around that task, kept as data", () 
   const planned = drillPrompt({ skill: "Ruby on Rails", difficulty: "easy", focus: task, ctx: emptyCtx });
   assert.ok(planned.user.includes(`TASK: ${task}`));
   assert.match(planned.user, /never as instructions to you/);
+});
+
+check("a certification plan written as a string is read as a list, never as its characters", () => {
+  const list = [{ name: "AWS Certified Solutions Architect – Associate", priority: 1, whyThisOne: ["Fits the goal.", "Hands-on."], prepPlan: "Six weeks.", estimatedWeeks: 6, examCostUsd: 150, costIsEstimate: "true", roi: "Cloud roles", issuerDomain: "https://www.aws.amazon.com/certification/" }];
+  const plan = cleanCertificationPlan({ recommendations: JSON.stringify(list), skipForNow: "not a list", sequencingNote: 3 });
+  assert.equal(plan.recommendations.length, 1, "the string became one recommendation, not hundreds");
+  const r = plan.recommendations[0]!;
+  assert.equal(r.whyThisOne, "Fits the goal. Hands-on.", "a list of sentences becomes text");
+  assert.equal(r.issuer, "Amazon Web Services", "the issuer comes from the catalog when the model left it out");
+  assert.equal(r.issuerDomain, "aws.amazon.com");
+  assert.equal(r.costIsEstimate, true);
+  assert.deepEqual(plan.skipForNow, []);
+  assert.equal(plan.sequencingNote, "3");
+  assert.equal(cleanCertificationPlan({ recommendations: [{ priority: 1 }, "x", null] }).recommendations.length, 0, "nameless ones are dropped");
+  assert.equal(cleanCertificationPlan("nonsense").recommendations.length, 0);
+  const noCost = cleanCertificationPlan({ recommendations: [{ name: "Licence", examCostUsd: null, estimatedWeeks: "soon" }] }).recommendations[0]!;
+  assert.equal(noCost.examCostUsd, null, "no cost stays no cost, never 0");
+  assert.equal(noCost.estimatedWeeks, null);
+  for (const bad of ["not a domain", "javascript:alert(1)", "", "localhost", "two words.com", "<b>x</b>.com"]) assert.equal(plainDomain(bad), null, bad);
+});
+
+check("the certification plan sends its exact shape, and the prompt asks for every field of it", () => {
+  const p = certificationRecommendPrompt({ ctx: emptyCtx, candidates: "- x :: X", count: 3 });
+  const shape = p.schema as { properties: Record<string, { items?: { properties: Record<string, unknown> } }> };
+  assert.deepEqual(Object.keys(shape.properties), ["recommendations", "skipForNow", "sequencingNote"]);
+  const json = p.system.slice(p.system.indexOf("Return ONLY JSON"));
+  for (const key of Object.keys(shape.properties.recommendations!.items!.properties)) assert.ok(json.includes(`"${key}"`), key);
+  assert.match(p.user, /never a list written as text/);
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

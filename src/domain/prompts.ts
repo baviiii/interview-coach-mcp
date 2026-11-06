@@ -17,6 +17,7 @@ import {
 } from "./interview-loop.js";
 import { rubricFor, weightsText } from "./scoring.js";
 import {
+  certificationPlanShape,
   debriefShape,
   evaluationShape,
   nextQuestionShape,
@@ -918,11 +919,14 @@ export function certificationRecommendPrompt(args: {
 Return ONLY JSON:
 {
   "recommendations": [{
-    "certificationId": string|null, "name": string, "priority": number,
+    "certificationId": string|null, "name": string,
+    "issuer": "who awards it, e.g. Amazon Web Services, AHPRA, CompTIA",
+    "issuerDomain": "the issuer's main website domain, e.g. aws.amazon.com — null if you're not sure",
+    "priority": number,
     "source": "the source of this credential — the URL it was researched from, or 'model knowledge' (copy it from the candidate line)",
     "whyThisOne": "tied to their goal, gaps and existing certs",
     "prepPlan": "2-3 sentence prep approach given their weekly hours",
-    "estimatedWeeks": number, "examCostUsd": number|null,
+    "estimatedWeeks": number, "examCostUsd": number|null, "costIsEstimate": boolean,
     "roi": "what doors it opens, concretely"
   }],
   "skipForNow": [{ "name": string, "why": string }],
@@ -935,9 +939,9 @@ CANDIDATE CREDENTIALS (id :: name :: level :: prep hours :: cost :: market signa
 ${args.candidates}
 
 CONSTRAINTS: budget ${args.budgetUsd ? `$${args.budgetUsd}` : "not stated"}; study time ${args.hoursPerWeek ?? 5} h/week.
-estimatedWeeks must follow from prep hours ÷ weekly hours, rounded sensibly. If a credential has no catalog cost, set examCostUsd to null rather than guessing.`;
+estimatedWeeks must follow from prep hours ÷ weekly hours, rounded sensibly. examCostUsd is the exam or licence fee in US dollars: take it from the candidate line when it has a cost (costIsEstimate false); otherwise give the current fee you know of and set costIsEstimate true, or null if you don't know it. Every field is plain text or a number: never a list written as text.`;
 
-  return { system, user };
+  return { system, user, schema: certificationPlanShape() };
 }
 
 export function careerRoadmapPrompt(args: {

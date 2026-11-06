@@ -10,6 +10,7 @@ import {
   CERT_CATALOG,
   certStatus,
   formatCredentialCandidates,
+  cleanCertificationPlan,
   matchCertification,
 } from "../domain/certifications.js";
 import { describeInterviewStyle, type FieldProfile } from "../domain/field-profile.js";
@@ -214,7 +215,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         max: Math.max(count * 2, 6),
       });
 
-      const { system, user } = certificationRecommendPrompt({
+      const { system, user, schema } = certificationRecommendPrompt({
         ctx,
         candidates,
         budgetUsd: args.budgetUsd,
@@ -222,8 +223,11 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         count,
         research,
       });
-      const res = await horus.infer<{ recommendations?: Array<{ name?: string }> }>({
+      const res = await horus.infer<unknown>({
         task: "career.recommend_certifications",
+        expect: ["recommendations"],
+        schema,
+        schemaName: "CertificationPlan",
         system,
         messages: [{ role: "user", content: user }],
         model: "deep",
@@ -231,12 +235,18 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
 
         userToken: auth.jwt,
       });
+      // Lists as lists and text as text, whatever the model wrote; a plan with
+      // nothing in it is never saved, so it can't be shown on every visit.
+      const plan = cleanCertificationPlan(res.data);
+      if (plan.recommendations.length === 0) {
+        return err("The coach couldn't put a plan together this time. Press Recommend again.");
+      }
 
       // Ground the top recommendation in a real source (proof-backed advice).
       const fieldLabel = args.targetField ?? ctx.goal?.targetField ?? ctx.goal?.targetRole ?? "this field";
       let proof = null;
       try {
-        const top = res.data.recommendations?.[0]?.name;
+        const top = plan.recommendations[0]?.name;
         if (top && groundingFits(grounding, profile)) {
           proof = await grounding.findEvidence({
             claim: `${top} certification worth it for ${fieldLabel}`,
@@ -253,11 +263,11 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
         title: `Next certifications for ${subject ?? "your goal"}`,
         subject,
         level: args.seniority,
-        payload: { plan: res.data, topPickProof: proof },
+        payload: { plan, topPickProof: proof },
       });
 
       return ok({
-        plan: res.data,
+        plan,
         topPickProof: proof,
         recommendationId,
         _meta: { model: res.model, research: researchMeta(research) },

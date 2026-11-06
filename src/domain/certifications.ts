@@ -461,6 +461,107 @@ export function buildCredentialCandidates(opts: {
   return out.slice(0, opts.max ?? 8);
 }
 
+/* ── The coach's certification plan, made safe to show ─────────────────── */
+
+export interface CertRecommendation {
+  certificationId: string | null;
+  name: string;
+  /** Who awards it; from the catalog when the model left it out. */
+  issuer: string | null;
+  /** The issuer's website, for its logo; only a plain domain name. */
+  issuerDomain: string | null;
+  priority: number;
+  source: string | null;
+  whyThisOne: string;
+  prepPlan: string;
+  estimatedWeeks: number | null;
+  examCostUsd: number | null;
+  /** True when the cost is the model's knowledge rather than the catalog's. */
+  costIsEstimate: boolean;
+  roi: string;
+}
+
+export interface CertPlan {
+  recommendations: CertRecommendation[];
+  skipForNow: Array<{ name: string; why: string }>;
+  sequencingNote: string;
+}
+
+/** A list, even when the model wrote it as a JSON string. */
+export function listOf(v: unknown): unknown[] {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string" && /^\s*\[/.test(v)) {
+    try {
+      const parsed: unknown = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/** Plain text, even when the model wrote a list of sentences. */
+function text(v: unknown): string {
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  if (Array.isArray(v)) return v.filter((s): s is string => typeof s === "string").join(" ").trim();
+  return "";
+}
+
+/** "https://www.aws.amazon.com/x" → "aws.amazon.com"; anything that isn't a domain → null. */
+export function plainDomain(v: unknown): string | null {
+  const d = text(v)
+    .toLowerCase()
+    .replace(/^[a-z]+:\/\//, "")
+    .replace(/[/?#].*$/, "")
+    .replace(/^www\./, "");
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d) && d.length <= 100 ? d : null;
+}
+
+/**
+ * The model's plan, as the site can show it: lists as lists, text as text,
+ * numbers only when they're real, and the issuer filled from the catalog when
+ * it's a credential we know. Recommendations without a name are dropped.
+ */
+export function cleanCertificationPlan(raw: unknown): CertPlan {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const recommendations = listOf(r.recommendations).flatMap((x, i): CertRecommendation[] => {
+    if (!x || typeof x !== "object") return [];
+    const o = x as Record<string, unknown>;
+    const name = text(o.name);
+    if (!name) return [];
+    const issuer = text(o.issuer);
+    const known = matchCertification(name, issuer || undefined);
+    const priority = Number(o.priority);
+    const weeks = Number(o.estimatedWeeks);
+    const cost = o.examCostUsd === null || o.examCostUsd === "" ? NaN : Number(o.examCostUsd);
+    return [
+      {
+        certificationId: text(o.certificationId) || null,
+        name,
+        issuer: issuer || known?.issuer || null,
+        issuerDomain: plainDomain(o.issuerDomain),
+        priority: Number.isFinite(priority) ? priority : i + 1,
+        source: text(o.source) || null,
+        whyThisOne: text(o.whyThisOne),
+        prepPlan: text(o.prepPlan),
+        estimatedWeeks: Number.isFinite(weeks) && weeks > 0 ? weeks : null,
+        examCostUsd: Number.isFinite(cost) && cost > 0 ? cost : null,
+        costIsEstimate: o.costIsEstimate === true || o.costIsEstimate === "true",
+        roi: text(o.roi),
+      },
+    ];
+  });
+  const skipForNow = listOf(r.skipForNow).flatMap((x) => {
+    if (!x || typeof x !== "object") return [];
+    const o = x as Record<string, unknown>;
+    const name = text(o.name);
+    return name ? [{ name, why: text(o.why) }] : [];
+  });
+  return { recommendations, skipForNow, sequencingNote: text(r.sequencingNote) };
+}
+
 /** Render candidates as the prompt's CANDIDATE CREDENTIALS lines. */
 export function formatCredentialCandidates(cands: CredentialCandidate[]): string {
   if (cands.length === 0) return "(none — rely on the real-world signals above; do not invent credentials)";

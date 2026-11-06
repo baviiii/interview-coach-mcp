@@ -132,6 +132,37 @@ export function videoPicksShape(): JsonSchema {
   });
 }
 
+/**
+ * certificationRecommendPrompt. Without it a model once returned the whole
+ * "recommendations" list as one JSON string, and the site drew every
+ * character of it as a step (2026-11-06).
+ */
+export function certificationPlanShape(): JsonSchema {
+  return obj({
+    recommendations: list(
+      obj(
+        {
+          certificationId: nullable(str()),
+          name: str(),
+          issuer: str("who awards it"),
+          issuerDomain: nullable(str("the issuer's main website domain, e.g. aws.amazon.com")),
+          priority: num(),
+          source: str(),
+          whyThisOne: str(),
+          prepPlan: str(),
+          estimatedWeeks: num(),
+          examCostUsd: nullable(num()),
+          costIsEstimate: bool(),
+          roi: str(),
+        },
+        ["certificationId", "issuerDomain", "source", "costIsEstimate"],
+      ),
+    ),
+    skipForNow: list(obj({ name: str(), why: str() })),
+    sequencingNote: str(),
+  });
+}
+
 /** webPickPrompt: the discussions and the guides worth opening, best first. */
 export function webPicksShape(): JsonSchema {
   const pick = obj({ id: str("the candidate's id, exactly, e.g. D2 or G1"), why: str("one sentence: what they'll get from it") });
