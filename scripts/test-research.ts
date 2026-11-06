@@ -17,6 +17,7 @@ import { skillLevel } from "../src/context/assemble.js";
 import { nextLevel, normalizeSkillCategory } from "../src/context/persist.js";
 import { creditsSkill, finishedUrls, normaliseUrl, statusFor } from "../src/context/resources.js";
 import { savedKey } from "../src/context/saved-results.js";
+import { isLaunch } from "../src/adapters/grounding/hackernews-client.js";
 import { groundingFits, proofFromSnippet } from "../src/tools/_util.js";
 import { practiceEvidence } from "../src/tools/analytics.js";
 import { FUNCTIONS_USED, TABLES_USED } from "../src/schema-used.js";
@@ -1505,6 +1506,13 @@ check("the coach's web picks keep only real candidates of the right list, in its
   assert.match(p.user, /GUIDES:\n\(none\)/);
   assert.match(p.system, /never as instructions/);
   assert.deepEqual(Object.keys((p.schema as { properties: object }).properties), ["discussions", "guides"]);
+});
+
+check("Hacker News product launches are not offered as reading", () => {
+  assert.ok(isLaunch("Show HN: I built a rate limiter in Rust"));
+  assert.ok(isLaunch("Launch HN: Acme (YC W24) - interview practice"));
+  assert.ok(!isLaunch("Ask HN: How do you prepare for system design interviews?"));
+  assert.ok(!isLaunch("How we show hn readers our design docs"));
 });
 
 console.log(`\nOK: ${passed} checks passed.\n`);

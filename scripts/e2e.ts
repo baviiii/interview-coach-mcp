@@ -277,6 +277,18 @@ async function main() {
     if (!pathway._meta?.degraded) fail("pathway must report its degraded state");
     console.log(`✓ learning pathway (${p.targets.length} targets, ${p.resources.length} resources)`);
 
+    // A plan to explore something is built around it, not the usual weak spots.
+    const explored = await mustPost("/api/learning/pathway", {
+      field: "Software Engineering",
+      explore: "cloud security",
+      weeks: 2,
+    });
+    const x = explored.pathway;
+    if (x?.explore !== "cloud security" || x?.focus?.source !== "explore" || !x?.targets?.length) {
+      fail(`explore pathway not built around what was asked: ${JSON.stringify(x?.focus ?? explored).slice(0, 300)}`);
+    }
+    console.log(`✓ explore pathway (${x.targets.map((t: { skill: string }) => t.skill).join(", ")})`);
+
     // Smart enter: what someone typed comes back as a job they can confirm.
     const preview = await mustPost("/api/career/field-preview", { field: "sparky" });
     if (!preview.known || !preview.canonicalTitle || !preview.interviewStyle) {

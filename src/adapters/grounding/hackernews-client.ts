@@ -73,11 +73,16 @@ async function search(query: string, n: number): Promise<HnHit[]> {
     if (!res.ok) return [];
     const json = (await res.json()) as HnResponse;
     return (json.hits ?? [])
-      .filter((h) => Boolean(h?.title))
+      .filter((h) => Boolean(h?.title) && !isLaunch(h.title))
       .sort((a, b) => (b.points ?? 0) - (a.points ?? 0));
   } catch {
     return [];
   }
+}
+
+/** "Show HN" and "Launch HN" posts are someone's new product, not something to learn from. */
+export function isLaunch(title: string): boolean {
+  return /^\s*(show|launch)\s+hn\b/i.test(title);
 }
 
 function statOf(h: HnHit): string {

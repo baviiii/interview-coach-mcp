@@ -328,7 +328,7 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Get the learner's full learning pathway",
       description:
-        "One call for the whole learning side: what to work on (from the last interview's debrief when there is one), a week-by-week plan, ranked resources, the drill that's due, and what the next mock should target. Works for a brand-new learner with an empty database.",
+        "One call for the whole learning side: what to work on (from the last interview's debrief when there is one), a week-by-week plan, ranked resources, the drill that's due, and what the next mock should target. Works for a brand-new learner with an empty database. Pass `explore` (\"cloud security\", \"moving into aged care\") for a plan built around something new; it's kept beside their main plan instead of replacing it.",
       inputSchema: S.learningPathwayInput,
     },
     async (args) => {
@@ -337,31 +337,35 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
       const field = fieldFor(ctx, args.field);
       const weeks = args.weeks ?? 4;
       const hoursPerWeek = args.hoursPerWeek ?? 5;
+      // A plan to explore something is about that, not about the last mock's gaps.
+      const explore = args.explore?.trim() || null;
 
       // What the last mock interview said to work on — this is the link that
       // keeps interviews and the pathway pointed at the same gaps.
       let focus: { skills: string[]; questionTypes?: string[]; why?: string } | null = null;
-      try {
-        const { data } = await auth.db
-          .from("ai_recommendations")
-          .select("ai_reasoning, created_at")
-          .eq("user_id", auth.userId)
-          .eq("recommendation_type", "practice_area")
-          .eq("status", "active")
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        const parsed = data?.ai_reasoning ? JSON.parse(data.ai_reasoning) : null;
-        if (parsed && Array.isArray(parsed.skills) && parsed.skills.length > 0) focus = parsed;
-      } catch {
-        /* best-effort — the pathway works without a prior interview */
+      if (!explore) {
+        try {
+          const { data } = await auth.db
+            .from("ai_recommendations")
+            .select("ai_reasoning, created_at")
+            .eq("user_id", auth.userId)
+            .eq("recommendation_type", "practice_area")
+            .eq("status", "active")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          const parsed = data?.ai_reasoning ? JSON.parse(data.ai_reasoning) : null;
+          if (parsed && Array.isArray(parsed.skills) && parsed.skills.length > 0) focus = parsed;
+        } catch {
+          /* best-effort — the pathway works without a prior interview */
+        }
+        if (!focus) reasons.push("no completed interview yet — pathway targets the skill matrix instead of a debrief");
       }
-      if (!focus) reasons.push("no completed interview yet — pathway targets the skill matrix instead of a debrief");
 
-      const [research, profile] = await Promise.all([
+      const [research, profile, exploreProfile] = await Promise.all([
         researchSafely(deps.research, {
-          field,
-          role: ctx.goal?.targetRole,
+          field: explore ?? field,
+          role: explore ? undefined : ctx.goal?.targetRole,
           intents: ["resource", "experience"],
           max: 4,
           // No knowledge index here: its documents are career reports and
@@ -372,11 +376,19 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
           userRef: auth.userId,
           userToken: auth.jwt,
         }),
+        // What doing that work involves, when it's a kind of work the model
+        // knows; otherwise the plan is built around the words themselves.
+        explore ? resolveFieldProfile(horus, explore, { userRef: auth.userId, userToken: auth.jwt }) : null,
       ]);
+      const exploreSkills = explore
+        ? exploreProfile?.source === "model" && exploreProfile.keySkills.length > 0
+          ? exploreProfile.keySkills
+          : [explore]
+        : undefined;
 
       const derived = deriveSkillTargets({
         ctx,
-        skills: args.skills ?? focus?.skills,
+        skills: args.skills ?? exploreSkills ?? focus?.skills,
         field,
         research,
         profile,
@@ -396,7 +408,7 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
             hoursPerWeek,
             skillTargets: derived.targets,
             resourceCandidates: "",
-            goal: args.goal ?? ctx.goal?.targetRole,
+            goal: args.goal ?? (explore ? `Explore ${explore}` : ctx.goal?.targetRole),
             ctx,
             research,
           });
@@ -412,10 +424,10 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
         })(),
         rankResources(deps, ctx, {
           skills: derived.targets.map((t) => t.skill),
-          goal: args.goal ?? ctx.goal?.targetRole,
-          field,
+          goal: args.goal ?? (explore ? `Explore ${explore}` : ctx.goal?.targetRole),
+          field: explore ?? field,
           maxResults: 6,
-          technical: techJob(profile),
+          technical: techJob(exploreProfile?.source === "model" ? exploreProfile : profile),
         }),
       ]);
       reasons.push(...resourceResult.reasons);
@@ -439,10 +451,14 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
       const pathway = {
         field,
         targetRole: ctx.goal?.targetRole ?? null,
+        /** What this plan explores, when it isn't their usual plan for the job. */
+        explore,
         focus: {
           skills: derived.targets.map((t) => t.skill),
-          source: derived.source,
-          why: focus?.why ?? derived.note ?? "Your lowest-proficiency tested skills.",
+          source: explore && !args.skills ? "explore" : derived.source,
+          why: explore
+            ? `You asked to explore ${explore}: these are the skills that work leans on most.`
+            : (focus?.why ?? derived.note ?? "Your lowest-proficiency tested skills."),
           fromLastInterview: focus !== null,
         },
         targets: derived.targets,
@@ -462,11 +478,15 @@ export function registerLearningTools(server: McpServer, deps: ToolDeps): void {
         },
       };
 
+      // Rebuilding a plan replaces it; a plan to explore something is filed
+      // under that as well, so it sits beside their main plan for the job.
       const recommendationId = await saveResult(auth.db, auth.userId, {
         type: "pathway",
-        title: `Learning pathway: ${derived.targets.map((t) => t.skill).slice(0, 3).join(", ")}`,
+        title: explore
+          ? `Explore: ${explore}`
+          : `Learning pathway: ${derived.targets.map((t) => t.skill).slice(0, 3).join(", ")}`,
         description: `${weeks}w · ${hoursPerWeek} h/week · ${field}`,
-        subject: args.field ?? field,
+        subject: explore ? `${args.field ?? field} · explore: ${explore}` : (args.field ?? field),
         payload: { pathway },
       });
 

@@ -150,6 +150,12 @@ export const learningPathwayInput = {
   goal: z.string().max(500).optional(),
   weeks: z.number().int().min(1).max(12).optional(),
   hoursPerWeek: z.number().int().min(1).max(60).optional(),
+  /**
+   * Something to explore, in the learner's words ("cloud security", "moving
+   * into aged care"). The plan is built around it instead of their weakest
+   * skills, and saved beside their other plans rather than replacing them.
+   */
+  explore: z.string().trim().min(2).max(120).optional(),
 };
 
 export const skillVideosInput = {
