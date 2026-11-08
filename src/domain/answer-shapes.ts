@@ -151,7 +151,7 @@ export function certificationPlanShape(): JsonSchema {
           whyThisOne: str(),
           prepPlan: str(),
           estimatedWeeks: num(),
-          examCostUsd: nullable(num()),
+          examCostAud: nullable(num()),
           costIsEstimate: bool(),
           roi: str(),
         },

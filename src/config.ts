@@ -17,6 +17,10 @@ export const config = {
   // research query is scoped to it, so a nurse gets that country's registration
   // body and licences rather than whichever country the model defaults to.
   market: opt("MARKET", "Australia")!,
+  // Prices are shown in Australian dollars. The certification catalog keeps US
+  // list prices, converted at this rate; it's a guide (a converted price always
+  // says "about"), so update it now and then rather than chasing the market.
+  audPerUsd: Number(opt("AUD_PER_USD", "1.55")),
 
   supabase: {
     url: opt("SUPABASE_URL"),

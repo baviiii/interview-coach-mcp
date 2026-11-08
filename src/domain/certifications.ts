@@ -475,7 +475,8 @@ export interface CertRecommendation {
   whyThisOne: string;
   prepPlan: string;
   estimatedWeeks: number | null;
-  examCostUsd: number | null;
+  /** In Australian dollars. */
+  examCostAud: number | null;
   /** True when the cost is the model's knowledge rather than the catalog's. */
   costIsEstimate: boolean;
   roi: string;
@@ -524,7 +525,7 @@ export function plainDomain(v: unknown): string | null {
  * numbers only when they're real, and the issuer filled from the catalog when
  * it's a credential we know. Recommendations without a name are dropped.
  */
-export function cleanCertificationPlan(raw: unknown): CertPlan {
+export function cleanCertificationPlan(raw: unknown, audPerUsd = 1.55): CertPlan {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const recommendations = listOf(r.recommendations).flatMap((x, i): CertRecommendation[] => {
     if (!x || typeof x !== "object") return [];
@@ -535,7 +536,11 @@ export function cleanCertificationPlan(raw: unknown): CertPlan {
     const known = matchCertification(name, issuer || undefined);
     const priority = Number(o.priority);
     const weeks = Number(o.estimatedWeeks);
-    const cost = o.examCostUsd === null || o.examCostUsd === "" ? NaN : Number(o.examCostUsd);
+    const amount = (v: unknown) => (v === null || v === "" || v === undefined ? NaN : Number(v));
+    // Australian dollars; an answer in US dollars (an older shape) is converted.
+    const aud = amount(o.examCostAud);
+    const usd = amount(o.examCostUsd);
+    const cost = Number.isFinite(aud) ? aud : Number.isFinite(usd) ? Math.round(usd * audPerUsd) : NaN;
     return [
       {
         certificationId: text(o.certificationId) || null,
@@ -547,7 +552,7 @@ export function cleanCertificationPlan(raw: unknown): CertPlan {
         whyThisOne: text(o.whyThisOne),
         prepPlan: text(o.prepPlan),
         estimatedWeeks: Number.isFinite(weeks) && weeks > 0 ? weeks : null,
-        examCostUsd: Number.isFinite(cost) && cost > 0 ? cost : null,
+        examCostAud: Number.isFinite(cost) && cost > 0 ? Math.round(cost) : null,
         costIsEstimate: o.costIsEstimate === true || o.costIsEstimate === "true",
         roi: text(o.roi),
       },
@@ -563,7 +568,7 @@ export function cleanCertificationPlan(raw: unknown): CertPlan {
 }
 
 /** Render candidates as the prompt's CANDIDATE CREDENTIALS lines. */
-export function formatCredentialCandidates(cands: CredentialCandidate[]): string {
+export function formatCredentialCandidates(cands: CredentialCandidate[], audPerUsd = 1.55): string {
   if (cands.length === 0) return "(none — rely on the real-world signals above; do not invent credentials)";
   return cands
     .map((c) => {
@@ -571,8 +576,9 @@ export function formatCredentialCandidates(cands: CredentialCandidate[]): string
       const level = c.level ?? "n/a";
       const fit = c.levelFit ? ` (${c.levelFit} fit)` : "";
       const prep = c.prepHours ? `${c.prepHours[0]}-${c.prepHours[1]}h` : "prep n/a";
-      // Catalog costs are US list prices — say so, or the model reads them as local currency.
-      const cost = c.examCostUsd != null ? `US$${c.examCostUsd}` : "cost n/a";
+      // Catalog costs are US list prices: shown in Australian dollars, and said to be converted.
+      const cost =
+        c.examCostUsd != null ? `about A$${Math.round(c.examCostUsd * audPerUsd)} (US$${c.examCostUsd} list price)` : "cost n/a";
       const extra = c.prereqNote ? ` :: ${c.prereqNote}` : "";
       return `- ${id} :: ${c.name} :: ${level}${fit} :: ${prep} :: ${cost} :: ${c.marketSignal} :: source: ${c.source}${extra}`;
     })

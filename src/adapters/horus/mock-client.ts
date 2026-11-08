@@ -528,7 +528,7 @@ function mockFor(task: string): unknown {
             whyThisOne: "(mock) Closes the orchestration gap and is hands-on, matching how you learn.",
             prepPlan: "(mock) 6 weeks: killer.sh sessions weekly, daily 30-min kubectl reps.",
             estimatedWeeks: 8,
-            examCostUsd: 445,
+            examCostAud: 690,
             roi: "(mock) Unlocks platform-leaning backend roles.",
           },
         ],

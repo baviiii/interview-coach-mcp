@@ -224,6 +224,9 @@ export const analyzeCertificationsInput = {
 export const recommendCertificationsInput = {
   targetField: z.string().max(100).optional(),
   seniority: z.string().max(50).optional(),
+  /** Australian dollars. */
+  budgetAud: z.number().nonnegative().max(150000).optional(),
+  /** Older clients sent US dollars. */
   budgetUsd: z.number().nonnegative().max(100000).optional(),
   hoursPerWeek: z.number().int().min(1).max(60).optional(),
   count: z.number().int().min(1).max(5).optional(),

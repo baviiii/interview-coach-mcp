@@ -929,6 +929,9 @@ ${items.map((t, i) => `[${i + 1}] ${t.replace(/\s+/g, " ").slice(0, 300)}`).join
 export function certificationRecommendPrompt(args: {
   ctx: LearnerContext;
   candidates: string;
+  /** Australian dollars. */
+  budgetAud?: number;
+  /** Older clients: US dollars. */
   budgetUsd?: number;
   hoursPerWeek?: number;
   count: number;
@@ -946,7 +949,7 @@ Return ONLY JSON:
     "source": "the source of this credential — the URL it was researched from, or 'model knowledge' (copy it from the candidate line)",
     "whyThisOne": "tied to their goal, gaps and existing certs",
     "prepPlan": "2-3 sentence prep approach given their weekly hours",
-    "estimatedWeeks": number, "examCostUsd": number|null, "costIsEstimate": boolean,
+    "estimatedWeeks": number, "examCostAud": number|null, "costIsEstimate": boolean,
     "roi": "what doors it opens, concretely"
   }],
   "skipForNow": [{ "name": string, "why": string }],
@@ -958,8 +961,8 @@ ${realWorldBlock(args.research, { only: ["credential", "fact"] })}
 CANDIDATE CREDENTIALS (id :: name :: level :: prep hours :: cost :: market signal :: source/notes — id is "—" unless the catalog has facts for it):
 ${args.candidates}
 
-CONSTRAINTS: budget ${args.budgetUsd ? `$${args.budgetUsd}` : "not stated"}; study time ${args.hoursPerWeek ?? 5} h/week.
-estimatedWeeks must follow from prep hours ÷ weekly hours, rounded sensibly. examCostUsd is the exam or licence fee in US dollars: take it from the candidate line when it has a cost (costIsEstimate false); otherwise give the current fee you know of and set costIsEstimate true, or null if you don't know it. Every field is plain text or a number: never a list written as text.`;
+CONSTRAINTS: budget ${args.budgetAud ? `A$${args.budgetAud}` : args.budgetUsd ? `US$${args.budgetUsd}` : "not stated"}; study time ${args.hoursPerWeek ?? 5} h/week.
+estimatedWeeks must follow from prep hours ÷ weekly hours, rounded sensibly. examCostAud is what a candidate in Australia pays for the exam or licence, in Australian dollars: take it from the candidate line when it has a cost (costIsEstimate false); otherwise give the current Australian fee you know of and set costIsEstimate true, or null if you don't know it. priority 1 is the credential to start first, and sequencingNote describes exactly that order. Every field is plain text or a number: never a list written as text.`;
 
   return { system, user, schema: certificationPlanShape() };
 }

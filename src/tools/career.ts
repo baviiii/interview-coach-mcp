@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { FieldResearch } from "../adapters/research/index.js";
+import { config } from "../config.js";
 import { assembleLearnerContext } from "../context/assemble.js";
 import { resolveFieldProfile } from "../context/field-profile.js";
 import { persistSkillSignals } from "../context/persist.js";
@@ -72,7 +73,7 @@ function credentialLines(
     seniority: opts.seniority ?? ctx.goal?.seniority ?? ctx.targetSeniority,
     max: opts.max ?? 8,
   });
-  return formatCredentialCandidates(candidates);
+  return formatCredentialCandidates(candidates, config.audPerUsd);
 }
 
 export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
@@ -218,6 +219,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
       const { system, user, schema } = certificationRecommendPrompt({
         ctx,
         candidates,
+        budgetAud: args.budgetAud,
         budgetUsd: args.budgetUsd,
         hoursPerWeek: args.hoursPerWeek,
         count,
@@ -237,7 +239,7 @@ export function registerCareerTools(server: McpServer, deps: ToolDeps): void {
       });
       // Lists as lists and text as text, whatever the model wrote; a plan with
       // nothing in it is never saved, so it can't be shown on every visit.
-      const plan = cleanCertificationPlan(res.data);
+      const plan = cleanCertificationPlan(res.data, config.audPerUsd);
       if (plan.recommendations.length === 0) {
         return err("The coach couldn't put a plan together this time. Press Recommend again.");
       }

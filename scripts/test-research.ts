@@ -1531,7 +1531,7 @@ check("a drill from the study plan is built around that task, kept as data", () 
 });
 
 check("a certification plan written as a string is read as a list, never as its characters", () => {
-  const list = [{ name: "AWS Certified Solutions Architect – Associate", priority: 1, whyThisOne: ["Fits the goal.", "Hands-on."], prepPlan: "Six weeks.", estimatedWeeks: 6, examCostUsd: 150, costIsEstimate: "true", roi: "Cloud roles", issuerDomain: "https://www.aws.amazon.com/certification/" }];
+  const list = [{ name: "AWS Certified Solutions Architect – Associate", priority: 1, whyThisOne: ["Fits the goal.", "Hands-on."], prepPlan: "Six weeks.", estimatedWeeks: 6, examCostAud: 233, costIsEstimate: "true", roi: "Cloud roles", issuerDomain: "https://www.aws.amazon.com/certification/" }];
   const plan = cleanCertificationPlan({ recommendations: JSON.stringify(list), skipForNow: "not a list", sequencingNote: 3 });
   assert.equal(plan.recommendations.length, 1, "the string became one recommendation, not hundreds");
   const r = plan.recommendations[0]!;
@@ -1543,8 +1543,11 @@ check("a certification plan written as a string is read as a list, never as its 
   assert.equal(plan.sequencingNote, "3");
   assert.equal(cleanCertificationPlan({ recommendations: [{ priority: 1 }, "x", null] }).recommendations.length, 0, "nameless ones are dropped");
   assert.equal(cleanCertificationPlan("nonsense").recommendations.length, 0);
-  const noCost = cleanCertificationPlan({ recommendations: [{ name: "Licence", examCostUsd: null, estimatedWeeks: "soon" }] }).recommendations[0]!;
-  assert.equal(noCost.examCostUsd, null, "no cost stays no cost, never 0");
+  const noCost = cleanCertificationPlan({ recommendations: [{ name: "Licence", examCostAud: null, estimatedWeeks: "soon" }] }).recommendations[0]!;
+  assert.equal(noCost.examCostAud, null, "no cost stays no cost, never 0");
+  assert.equal(r.examCostAud, 233, "costs are Australian dollars");
+  const usd = cleanCertificationPlan({ recommendations: [{ name: "X", examCostUsd: 100 }] }, 1.5).recommendations[0]!;
+  assert.equal(usd.examCostAud, 150, "an answer in US dollars is converted, never shown as if it were AUD");
   assert.equal(noCost.estimatedWeeks, null);
   for (const bad of ["not a domain", "javascript:alert(1)", "", "localhost", "two words.com", "<b>x</b>.com"]) assert.equal(plainDomain(bad), null, bad);
 });
@@ -1556,6 +1559,9 @@ check("the certification plan sends its exact shape, and the prompt asks for eve
   const json = p.system.slice(p.system.indexOf("Return ONLY JSON"));
   for (const key of Object.keys(shape.properties.recommendations!.items!.properties)) assert.ok(json.includes(`"${key}"`), key);
   assert.match(p.user, /never a list written as text/);
+  assert.match(p.user, /in Australian dollars/);
+  assert.match(p.user, /priority 1 is the credential to start first/);
+  assert.match(certificationRecommendPrompt({ ctx: emptyCtx, candidates: "x", count: 3, budgetAud: 450 }).user, /budget A\$450/);
 });
 
 await checkAsync("logo sites: only real, plain domains are kept; anything else is no logo", async () => {
