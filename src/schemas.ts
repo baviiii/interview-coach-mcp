@@ -165,6 +165,11 @@ export const skillVideosInput = {
   max: z.number().int().min(1).max(3).optional(),
 };
 
+export const brandSitesInput = {
+  /** Skills, certifications, tools or lines of advice shown on the page; up to 40 at a time. */
+  names: z.array(z.string().trim().min(1).max(300)).min(1).max(40),
+};
+
 export const skillWebInput = {
   skill: z.string().min(1).max(100),
   /** The job; defaults to the learner's career goal. */

@@ -163,6 +163,13 @@ export function certificationPlanShape(): JsonSchema {
   });
 }
 
+/** brandSitesPrompt: each numbered item's organisation's website, or null. */
+export function brandSitesShape(): JsonSchema {
+  return obj({
+    sites: list(obj({ id: str("the item's number, exactly"), domain: nullable(str("a bare domain like ahpra.gov.au")) })),
+  });
+}
+
 /** webPickPrompt: the discussions and the guides worth opening, best first. */
 export function webPicksShape(): JsonSchema {
   const pick = obj({ id: str("the candidate's id, exactly, e.g. D2 or G1"), why: str("one sentence: what they'll get from it") });

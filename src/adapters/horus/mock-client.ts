@@ -449,6 +449,9 @@ function mockFor(task: string): unknown {
         successMetric: "(mock) Design-question average ≥ 7/10 by the final week.",
       };
 
+    case "brand.sites":
+      return { sites: [{ id: "1", domain: "python.org" }, { id: "2", domain: null }] };
+
     case "study.next_drill":
       return {
         drill: {

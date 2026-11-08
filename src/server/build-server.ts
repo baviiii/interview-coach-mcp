@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { registerResources } from "../resources/index.js";
 import { registerAnalyticsTools } from "../tools/analytics.js";
+import { registerBrandTools } from "../tools/brand-sites.js";
 import { registerCareerTools } from "../tools/career.js";
 import { registerInterviewTools, type ToolDeps } from "../tools/interview.js";
 import { registerLearningTools } from "../tools/learning.js";
@@ -27,6 +28,7 @@ export function buildServer(deps: ToolDeps): McpServer {
   registerProofTools(server, deps);
   registerVideoTools(server, deps);
   registerSkillWebTools(server, deps);
+  registerBrandTools(server, deps);
   registerSelectionTools(server, deps);
   registerAnalyticsTools(server, deps);
   registerResources(server, deps);

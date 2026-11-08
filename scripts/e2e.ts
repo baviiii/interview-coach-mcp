@@ -289,6 +289,13 @@ async function main() {
     }
     console.log(`✓ explore pathway (${x.targets.map((t: { skill: string }) => t.skill).join(", ")})`);
 
+    // Logos: every name asked about comes back, with a website or null.
+    const brands = await mustPost("/api/brand/sites", { names: ["Python", "Communication"] });
+    if (!brands.sites || !("Python" in brands.sites) || !("Communication" in brands.sites)) {
+      fail(`brand sites didn't answer for every name: ${JSON.stringify(brands).slice(0, 300)}`);
+    }
+    console.log(`✓ brand sites (Python → ${brands.sites.Python ?? "none"}, Communication → ${brands.sites.Communication ?? "none"})`);
+
     // Smart enter: what someone typed comes back as a job they can confirm.
     const preview = await mustPost("/api/career/field-preview", { field: "sparky" });
     if (!preview.known || !preview.canonicalTitle || !preview.interviewStyle) {

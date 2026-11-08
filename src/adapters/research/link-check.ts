@@ -31,6 +31,33 @@ export function plausibleHost(host: string): boolean {
   return !/(^|\.)(localhost|local|internal|intranet|home|lan|corp|test|invalid|example)$/.test(h);
 }
 
+const hosts = new Map<string, { at: number; ok: boolean }>();
+
+/**
+ * True when DNS knows the host. Used for websites the model names for a logo:
+ * nothing is fetched from them here, but a domain that doesn't exist is a
+ * domain the model made up.
+ */
+export async function hostExists(host: string): Promise<boolean> {
+  const h = host.toLowerCase();
+  if (!plausibleHost(h)) return false;
+  const hit = hosts.get(h);
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.ok;
+  let ok = false;
+  try {
+    await Promise.race([
+      lookup(h),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("dns timeout")), 2500)),
+    ]);
+    ok = true;
+  } catch {
+    ok = false;
+  }
+  if (hosts.size >= 2000) hosts.delete(hosts.keys().next().value!);
+  hosts.set(h, { at: Date.now(), ok });
+  return ok;
+}
+
 /** True for addresses that must never be fetched: private, loopback, link-local, shared, reserved. */
 export function privateAddress(address: string): boolean {
   if (isIP(address) === 6) {

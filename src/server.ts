@@ -145,6 +145,7 @@ app.post("/api/study/explain", rest("explain_concept"));
 app.post("/api/study/resource/progress", rest("track_resource_progress"));
 app.post("/api/study/videos", rest("find_skill_videos"));
 app.post("/api/study/web", rest("find_skill_web_resources"));
+app.post("/api/brand/sites", rest("find_brand_sites"));
 
 app.listen(config.port, () => {
   console.log(
