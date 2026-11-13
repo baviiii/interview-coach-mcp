@@ -25,6 +25,17 @@ export class NotFoundError extends AppError {
   }
 }
 
+/**
+ * The HTTP status for a tool that failed. A thrown error reaches the REST
+ * bridge only as its message, so this reads the message: the model service
+ * being down or slow ("Horus 503: …", "Horus timed out …", "Horus request
+ * failed …") is a 503 the browser can tell people to retry; anything else is
+ * the request's fault, a 400.
+ */
+export function toolErrorStatus(message: string): number {
+  return /^Horus (\d{3}\b|timed out|request failed)/.test(message) ? 503 : 400;
+}
+
 export class UpstreamError extends AppError {
   constructor(message = "Upstream (Horus) error") {
     super(message, 502);

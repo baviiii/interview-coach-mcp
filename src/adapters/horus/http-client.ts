@@ -13,20 +13,35 @@ import type {
 export const MAX_ATTEMPTS = 3;
 
 /**
+ * The Supabase platform refused the request before our function ran: a 503
+ * whose body is the platform's own `{ code, message }` (our functions answer
+ * `{ error }`). BOOT_ERROR means no worker started for it;
+ * SUPABASE_EDGE_RUNTIME_SERVICE_DEGRADED means the edge runtime turned it away
+ * (seen 2026-11-13 starting a full interview: "Service is temporarily
+ * unavailable"). Either way the function never ran, so nothing was spent.
+ */
+export function neverRan(status: number, body: string): boolean {
+  return (
+    status === 503 &&
+    /"code"\s*:\s*"(BOOT_ERROR|SUPABASE_EDGE_RUNTIME_SERVICE_DEGRADED)"/.test(body)
+  );
+}
+
+/**
  * How long to wait before trying again, or null when the response mustn't be
  * retried.
  *
- * Only Supabase Edge Functions' BOOT_ERROR is retried. It means no worker
- * started for the request, so the function never ran: nothing was spent, no
- * quota was used, and sending it again is safe. It happens when several long
- * model calls arrive together, because each holds a worker for its whole
- * duration and the platform won't start more (seen 2026-10-31 on CareerCraft's
- * infer: three parallel calls, one or two refused after ~10 s while the others
- * succeeded). Waiting a moment lets a worker free up. Any other failure may
- * have run the call and spent on it, so it is never retried here.
+ * Only a request the platform refused before our function ran is retried
+ * (neverRan): nothing was spent, no quota was used, and sending it again is
+ * safe. It happens when several long model calls arrive together, because
+ * each holds a worker for its whole duration and the platform won't start
+ * more (seen 2026-10-31 on CareerCraft's infer: three parallel calls, one or
+ * two refused after ~10 s while the others succeeded). Waiting a moment lets
+ * a worker free up. Any other failure may have run the call and spent on it,
+ * so it is never retried here.
  */
 export function retryDelay(status: number, body: string, attempt: number): number | null {
-  if (attempt >= MAX_ATTEMPTS || status !== 503 || !/"code"\s*:\s*"BOOT_ERROR"/.test(body)) return null;
+  if (attempt >= MAX_ATTEMPTS || !neverRan(status, body)) return null;
   // 1–1.5 s, then 3–3.5 s; jittered so refused calls don't come back in step.
   return (attempt === 1 ? 1000 : 3000) + Math.floor(Math.random() * 500);
 }
@@ -111,7 +126,7 @@ export class HttpHorusClient implements HorusPort {
       text = await res.text().catch(() => "");
       const wait = retryDelay(res.status, text, attempt);
       if (wait === null) break;
-      console.warn(`[horus] ${url} had no worker to run on (BOOT_ERROR); retrying in ${wait}ms (attempt ${attempt + 1} of ${MAX_ATTEMPTS})`);
+      console.warn(`[horus] ${url} was turned away before it ran (HTTP 503); retrying in ${wait}ms (attempt ${attempt + 1} of ${MAX_ATTEMPTS})`);
       await new Promise((resolve) => setTimeout(resolve, wait));
     }
     if (!res.ok) {

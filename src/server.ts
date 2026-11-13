@@ -10,7 +10,7 @@ import { getModelProvider } from "./adapters/horus/index.js";
 import { mintVoiceSession } from "./adapters/horus/voice.js";
 import { getResearch } from "./adapters/research/index.js";
 import { config } from "./config.js";
-import { AppError } from "./errors.js";
+import { AppError, toolErrorStatus } from "./errors.js";
 import { authenticate, extractBearer, type AuthContext } from "./server/auth.js";
 import { buildServer } from "./server/build-server.js";
 import { rateLimit } from "./server/rate-limit.js";
@@ -163,7 +163,10 @@ async function callTool(deps: ToolDeps, name: string, args: Record<string, unkno
     const result = await client.callTool({ name, arguments: args });
     const content = (result.content ?? []) as Array<{ type: string; text?: string }>;
     const text = content.find((c) => c.type === "text")?.text;
-    if (result.isError) throw new AppError(text ?? "Tool error", 400);
+    if (result.isError) {
+      const message = text ?? "Tool error";
+      throw new AppError(message, toolErrorStatus(message));
+    }
     return text ? JSON.parse(text) : null;
   } finally {
     await client.close();

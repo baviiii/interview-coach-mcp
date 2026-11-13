@@ -16,7 +16,7 @@
 
 import { config } from "../../config.js";
 import { AppError } from "../../errors.js";
-import { retryDelay } from "./http-client.js";
+import { neverRan, retryDelay } from "./http-client.js";
 
 export interface VoiceSession {
   /** Short-lived key for this one session. */
@@ -70,7 +70,7 @@ export async function mintVoiceSession(opts: { userRef: string; userToken: strin
     // A 503 is "not configured there" unless it's the platform saying no
     // worker started — then the service is busy, not off. 429 is the
     // learner's own hourly limit.
-    if (res.status === 503 && /BOOT_ERROR/.test(text)) {
+    if (neverRan(res.status, text)) {
       throw new AppError("The speech service is busy. Type this answer, or try again in a moment.", 503);
     }
     if (res.status === 503) throw new AppError("Spoken answers aren't switched on yet.", 503);

@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
 import { answerProblem, withAnswerCheck } from "../src/adapters/horus/answer-check.js";
-import { QuotaError, UnreadableAnswerError } from "../src/errors.js";
+import { QuotaError, toolErrorStatus, UnreadableAnswerError } from "../src/errors.js";
 import { skillLevel } from "../src/context/assemble.js";
 import { nextLevel, normalizeSkillCategory } from "../src/context/persist.js";
 import { creditsSkill, finishedUrls, normaliseUrl, statusFor } from "../src/context/resources.js";
@@ -82,7 +82,7 @@ import { latestPerQuestion, sameQuestion } from "../src/tools/interview.js";
 import { canonicalField, resolveFieldProfile } from "../src/context/field-profile.js";
 import { deriveSkillTargets } from "../src/domain/targets.js";
 import { withMarket, type InferRequest, type ModelProvider } from "../src/adapters/horus/index.js";
-import { MAX_ATTEMPTS, retryDelay, unreadableUpstream } from "../src/adapters/horus/http-client.js";
+import { MAX_ATTEMPTS, neverRan, retryDelay, unreadableUpstream } from "../src/adapters/horus/http-client.js";
 import { searchUrl } from "../src/tools/proof.js";
 import { officialTrainingLinks, withCheckedLinks } from "../src/tools/suggested-links.js";
 import { plausibleHost, privateAddress } from "../src/adapters/research/link-check.js";
@@ -1034,6 +1034,31 @@ check("a call is retried only when no worker started for it (BOOT_ERROR), and at
   assert.equal(retryDelay(502, boot, 1), null);
   assert.equal(retryDelay(546, '{"code":"WORKER_LIMIT"}', 1), null);
   assert.equal(retryDelay(429, '{"error":"Usage limit reached"}', 1), null);
+});
+
+check("the edge runtime turning a call away (SERVICE_DEGRADED) is retried like BOOT_ERROR", () => {
+  const degraded =
+    '{"code":"SUPABASE_EDGE_RUNTIME_SERVICE_DEGRADED","message":"Service is temporarily unavailable"}';
+  assert.ok(neverRan(503, degraded));
+  const first = retryDelay(503, degraded, 1)!;
+  assert.ok(first >= 1000 && first < 1500, `first wait ${first}`);
+  assert.equal(retryDelay(503, degraded, MAX_ATTEMPTS), null, "gives up after the last attempt");
+  // Our own function's errors (`{ error }`) may have run, so they aren't.
+  assert.ok(!neverRan(503, '{"error":"SUPABASE_EDGE_RUNTIME_SERVICE_DEGRADED"}'));
+  assert.ok(!neverRan(500, degraded));
+});
+
+check("a tool that failed because the model service was down answers 503, not 400", () => {
+  assert.equal(
+    toolErrorStatus(
+      'Horus 503: {"code":"SUPABASE_EDGE_RUNTIME_SERVICE_DEGRADED","message":"Service is temporarily unavailable"}',
+    ),
+    503,
+  );
+  assert.equal(toolErrorStatus("Horus timed out after 60000ms"), 503);
+  assert.equal(toolErrorStatus("Horus request failed: fetch failed"), 503);
+  assert.equal(toolErrorStatus("field is required"), 400);
+  assert.equal(toolErrorStatus("Tool error"), 400);
 });
 
 check("a coach-suggested resource links to a search for it, never an invented page", () => {
