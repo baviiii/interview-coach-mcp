@@ -24,7 +24,9 @@ function isEmpty(value: unknown): boolean {
   if (value === undefined || value === null) return true;
   if (typeof value === "string") return !value.trim();
   if (Array.isArray(value)) return value.length === 0;
-  if (typeof value === "object") return Object.keys(value).length === 0;
+  // An object is empty when everything in it is: { top: [], notable: [] }
+  // has keys but no answer.
+  if (typeof value === "object") return Object.values(value).every(isEmpty);
   return false;
 }
 

@@ -704,7 +704,9 @@ Weight rounds toward the intersection of the role's real interview structure (ab
         messages: [{ role: "user", content: user }],
         schema,
         schemaName: "InterviewDebrief",
-        expect: ["overallScore", "executiveSummary"],
+        // The debrief page is built from these lists; an answer that left
+        // them empty and wrote it all into the summary is asked for again.
+        expect: ["overallScore", "executiveSummary", "strengths", "developmentAreas", "nextSessionFocus"],
         model: "deep",
         temperature: 0.2,
         userRef: auth.userId,

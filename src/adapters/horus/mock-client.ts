@@ -381,6 +381,7 @@ function mockFor(task: string): unknown {
             },
           ],
         },
+        untested: ["(mock) Stakeholder management"],
         nextSessionFocus: {
           skills: ["System Design", "Quantifying impact"],
           questionTypes: ["system_design", "behavioral"],

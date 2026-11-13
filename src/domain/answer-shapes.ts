@@ -201,6 +201,7 @@ export function debriefShape(roundType: string): JsonSchema {
     competencyMatrix: list(obj({ competency: str(), score: num(), level: str(), developmentNeeded: bool() })),
     improvementPlan: obj({ immediate: list(obj({ area: str(), action: str(), timeline: str() })) }),
     nextSessionFocus: obj({ skills: list(str()), questionTypes: list(str()), why: str() }),
+    untested: list(str()),
     ...extra,
   });
 }

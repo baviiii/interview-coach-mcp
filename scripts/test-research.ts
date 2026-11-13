@@ -1151,6 +1151,13 @@ check("an answer is unusable when it isn't an object, is an error, or lacks a fi
   assert.match(answerProblem({ questions: [] }, ["questions"]) ?? "", /missing/, "an empty list is missing");
   assert.match(answerProblem({ question: "  " }, ["question"]) ?? "", /missing/, "a blank string is missing");
   assert.equal(answerProblem({ overallScore: 0, executiveSummary: "x" }, ["overallScore", "executiveSummary"]), null, "a score of 0 is an answer");
+  assert.match(
+    answerProblem({ strengths: { top: [], notable: [] } }, ["strengths"]) ?? "",
+    /missing "strengths"/,
+    "an object whose lists are all empty is missing",
+  );
+  assert.equal(answerProblem({ strengths: { top: ["Q3 story"], notable: [] } }, ["strengths"]), null, "one filled list is an answer");
+  assert.equal(answerProblem({ breakdown: { clarity: { score: 0 } } }, ["breakdown"]), null, "a nested 0 is an answer");
   assert.match(answerProblem({ error: "CRITICAL MISMATCH — cannot proceed" }) ?? "", /gave an error/);
   assert.match(answerProblem([1, 2]) ?? "", /not a JSON object/);
   assert.match(answerProblem({}) ?? "", /empty/);

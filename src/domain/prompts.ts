@@ -620,14 +620,16 @@ Return ONLY JSON:
 {
   "overallScore": number, "grade": string, "readiness": string,
   "recommendation": "Strong Hire|Hire|Lean Hire|No Hire|Strong No Hire",
-  "executiveSummary": string,
+  "executiveSummary": "2-3 sentences, 60 words at most: the verdict and what decides it",
   "stageBreakdown": [{ "stage": string, "score": number, "verdict": string }],
   "strengths": { "top": string[], "notable": string[] },
   "developmentAreas": { "critical": string[], "important": string[] },
   "competencyMatrix": [{ "competency": string, "score": number, "level": string, "developmentNeeded": boolean }],
   "improvementPlan": { "immediate": [{ "area": string, "action": string, "timeline": string }] },
-  "nextSessionFocus": { "skills": ["2-3 skills the next mock should hammer"], "questionTypes": ["the question types they most need reps on"], "why": string }${framing.extraJson}
-}${framing.closing ? `\n${framing.closing}` : ""}`;
+  "nextSessionFocus": { "skills": ["2-3 skills the next mock should hammer"], "questionTypes": ["the question types they most need reps on"], "why": string },
+  "untested": ["each competency this round never got to, named"]${framing.extraJson}
+}
+Keep "executiveSummary" short. Everything else goes in its own field, never in the summary: at least 2 "strengths" and at least 2 "developmentAreas" (what would cost them the job goes under "critical"), each one sentence naming the question it came from (e.g. "Q2"), a "competencyMatrix" entry for every competency the round covered, and 2-3 "nextSessionFocus" skills.${framing.closing ? `\n${framing.closing}` : ""}`;
 
   const qa = args.transcript
     .map(
